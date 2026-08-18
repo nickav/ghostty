@@ -27,6 +27,7 @@ core_app: *CoreApp,
 hwnd: win32.HWND,
 bg_brush: win32.HBRUSH,
 use_light_theme: win32.DWORD = 0,
+surface: ?*Surface,
 
 pub fn init(
     self: *App,
@@ -42,6 +43,10 @@ pub fn init(
         break :err try Config.default(core_app.alloc);
     };
     defer config.deinit();
+
+    const use_pos = config.@"window-position-x" != null and config.@"window-position-y" != null;
+    const initial_x: c_int = if (use_pos) config.@"window-position-x".? else win32.CW_USEDEFAULT;
+    const initial_y: c_int = if (use_pos) config.@"window-position-y".? else win32.CW_USEDEFAULT;
 
     const title_w = try std.unicode.utf8ToUtf16LeAllocZ(
         core_app.alloc,
@@ -89,10 +94,10 @@ pub fn init(
         class_name,
         title_w,
         win32.WS_OVERLAPPEDWINDOW,
+        initial_x,
+        initial_y,
         win32.CW_USEDEFAULT,
         win32.CW_USEDEFAULT,
-        800,
-        600,
         null,
         null,
         hinstance,
@@ -101,12 +106,20 @@ pub fn init(
         log.err("CreateWindowExW failed err={}", .{win32.GetLastError()});
         return error.Win32CreateWindowFailed;
     };
+
+    //
+    // NOTE(nick): this is a hack to get this working at all
+    // In the future, surface should own it's own HWND (unless we only want one copy of the app per window, which would maybe work as well).
+    // Either way, this needs to be though through more!
+    // :SurfaceShouldOwnTheHWND
+    //
     self.hwnd = hwnd;
 
     const surface = try core_app.alloc.create(Surface);
     errdefer core_app.alloc.destroy(surface);
     try surface.init(self, &config);
     try core_app.addSurface(surface);
+    self.surface = surface;
 }
 
 pub fn performAction(
@@ -117,13 +130,21 @@ pub fn performAction(
 ) !bool {
     _ = self;
     _ = value;
-
     switch (action) {
         .render => switch (target) {
             .surface => |surface| surface.draw() catch |err| {
                 log.warn("error drawing surface err={}", .{err});
             },
             .app => {},
+        },
+
+        .initial_size => {
+            // @Robustness: this wil be called before App.init() is called??
+            
+            // :SurfaceShouldOwnTheHWND
+            // var rect: win32.RECT = .{ .left = 0, .top = 0, .right = @intCast(value.width), .bottom = @intCast(value.height) };
+            // _ = win32.AdjustWindowRect(&rect, win32.WS_OVERLAPPEDWINDOW, 0);
+            // _ = win32.SetWindowPos(self.hwnd, null, 0, 0, rect.right - rect.left, rect.bottom - rect.top, win32.SWP_NOMOVE | win32.SWP_NOZORDER);
         },
 
         // Acknowledged but not acted on yet.
@@ -199,6 +220,27 @@ fn wndProc(
             // win32_resize_callback(window_handle);
             _ = win32.EndPaint(hwnd, &ps);
             return win32.DefWindowProcW(hwnd, msg, wparam, lparam);
+        },
+        win32.WM_SIZE => {
+            const self: *App = @ptrFromInt(@as(usize, @bitCast(win32.GetWindowLongPtrW(hwnd, win32.GWLP_USERDATA))));
+            
+            if (self.surface) |surface| {
+                var rect: win32.RECT = undefined;
+                _ = win32.GetClientRect(hwnd, &rect);
+
+                surface.core().sizeCallback(.{
+                    .width = @intCast(rect.right - rect.left),
+                    .height = @intCast(rect.bottom - rect.top),
+                }) catch |err| {
+                    log.warn("error handling resize err={}", .{err});
+                };
+
+                surface.core().draw() catch |err| {
+                    log.warn("error drawing surface err={}", .{err});
+                };
+            }
+
+            return 0;
         },
         win32.WM_SETTINGCHANGE => {
             if (lparam != 0) {

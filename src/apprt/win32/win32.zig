@@ -41,11 +41,16 @@ pub const WM_PAINT: UINT = 0x000F;
 pub const WM_SETTINGCHANGE: UINT = 0x001A;
 pub const WM_DWMCOLORIZATIONCOLORCHANGED: UINT = 0x0320;
 pub const WM_APP: UINT = 0x8000;
+pub const WM_ERASEBKGND: UINT = 0x0014;
+
+pub const SWP_NOMOVE: UINT = 0x0002;
+pub const SWP_NOZORDER: UINT = 0x0004;
 
 pub const IDC_ARROW: ResourceNameW = @ptrFromInt(32512);
 
 pub const DPI_AWARENESS_CONTEXT = HANDLE;
 pub const DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2: DPI_AWARENESS_CONTEXT = @ptrFromInt(@as(usize, @bitCast(@as(isize, -4))));
+
 pub const PROCESS_SYSTEM_DPI_AWARE: c_int = 1;
 pub const LOAD_LIBRARY_SEARCH_SYSTEM32: DWORD = 0x00000800;
 
@@ -59,7 +64,6 @@ pub const HGDIOBJ = *anyopaque;
 pub const GWLP_USERDATA: c_int = -21;
 pub const WHITE_BRUSH: c_int = 0;
 pub const BLACK_BRUSH: c_int = 4;
-pub const WM_ERASEBKGND: UINT = 0x0014;
 
 // align(1) because MAKEINTRESOURCE-style values aren't necessarily 2-byte aligned
 pub const ResourceNameA = [*:0]align(1) const u8;
@@ -367,3 +371,19 @@ pub extern "user32" fn GetWindowLongPtrW(
     hwnd: HWND,
     nIndex: c_int,
 ) callconv(.winapi) isize;
+
+pub extern "user32" fn AdjustWindowRect(
+    lpRect: *RECT,
+    dwStyle: DWORD,
+    bMenu: BOOL,
+) callconv(.winapi) BOOL;
+
+pub extern "user32" fn SetWindowPos(
+    hwnd: HWND,
+    hwndInsertAfter: ?HWND,
+    x: c_int,
+    y: c_int,
+    cx: c_int,
+    cy: c_int,
+    uFlags: UINT,
+) callconv(.winapi) BOOL;
