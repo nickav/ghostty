@@ -3,134 +3,23 @@
 const App = @This();
 
 const std = @import("std");
-const windows = std.os.windows;
 const Allocator = std.mem.Allocator;
 const apprt = @import("../../apprt.zig");
 const CoreApp = @import("../../App.zig");
 const configpkg = @import("../../config.zig");
 const Config = configpkg.Config;
 
+const win32 = @import("./win32.zig");
+
 const log = std.log.scoped(.win32);
-
-const HWND = windows.HWND;
-const HINSTANCE = windows.HINSTANCE;
-const HICON = windows.HICON;
-const HCURSOR = windows.HCURSOR;
-const HBRUSH = windows.HBRUSH;
-const HMENU = windows.HMENU;
-const ATOM = windows.ATOM;
-const DWORD = windows.DWORD;
-const UINT = windows.UINT;
-const LPCWSTR = windows.LPCWSTR;
-
-const BOOL = c_int;
-const WPARAM = usize;
-const LPARAM = isize;
-const LRESULT = isize;
-
-const WNDPROC = *const fn (
-    hwnd: HWND,
-    msg: UINT,
-    wparam: WPARAM,
-    lparam: LPARAM,
-) callconv(.winapi) LRESULT;
-
-const WNDCLASSEXW = extern struct {
-    cbSize: UINT = @sizeOf(WNDCLASSEXW),
-    style: UINT = 0,
-    lpfnWndProc: WNDPROC,
-    cbClsExtra: c_int = 0,
-    cbWndExtra: c_int = 0,
-    hInstance: HINSTANCE,
-    hIcon: ?HICON = null,
-    hCursor: ?HCURSOR = null,
-    hbrBackground: ?HBRUSH = null,
-    lpszMenuName: ?LPCWSTR = null,
-    lpszClassName: LPCWSTR,
-    hIconSm: ?HICON = null,
-};
-
-const POINT = extern struct { x: i32, y: i32 };
-
-const MSG = extern struct {
-    hwnd: ?HWND,
-    message: UINT,
-    wParam: WPARAM,
-    lParam: LPARAM,
-    time: DWORD,
-    pt: POINT,
-};
-
-const CW_USEDEFAULT: c_int = @bitCast(@as(u32, 0x80000000));
-const WS_OVERLAPPEDWINDOW: DWORD = 0x00CF0000;
-const SW_SHOWDEFAULT: c_int = 10;
-const WM_DESTROY: UINT = 0x0002;
-const WM_CLOSE: UINT = 0x0010;
-
-// align(1) because MAKEINTRESOURCE-style values (small integer resource
-// IDs cast to a pointer) aren't necessarily 2-byte aligned.
-const ResourceNameW = [*:0]align(1) const u16;
-
-const IDC_ARROW: ResourceNameW = @ptrFromInt(32512);
-
-extern "user32" fn RegisterClassExW(
-    class: *const WNDCLASSEXW,
-) callconv(.winapi) ATOM;
-extern "user32" fn CreateWindowExW(
-    dwExStyle: DWORD,
-    lpClassName: LPCWSTR,
-    lpWindowName: LPCWSTR,
-    dwStyle: DWORD,
-    X: c_int,
-    Y: c_int,
-    nWidth: c_int,
-    nHeight: c_int,
-    hWndParent: ?HWND,
-    hMenu: ?HMENU,
-    hInstance: HINSTANCE,
-    lpParam: ?*anyopaque,
-) callconv(.winapi) ?HWND;
-extern "user32" fn DestroyWindow(hwnd: HWND) callconv(.winapi) BOOL;
-extern "user32" fn ShowWindow(hwnd: HWND, nCmdShow: c_int) callconv(.winapi) BOOL;
-extern "user32" fn UpdateWindow(hwnd: HWND) callconv(.winapi) BOOL;
-extern "user32" fn DefWindowProcW(
-    hwnd: HWND,
-    msg: UINT,
-    wparam: WPARAM,
-    lparam: LPARAM,
-) callconv(.winapi) LRESULT;
-extern "user32" fn GetMessageW(
-    msg: *MSG,
-    hwnd: ?HWND,
-    msgFilterMin: UINT,
-    msgFilterMax: UINT,
-) callconv(.winapi) BOOL;
-extern "user32" fn TranslateMessage(msg: *const MSG) callconv(.winapi) BOOL;
-extern "user32" fn DispatchMessageW(msg: *const MSG) callconv(.winapi) LRESULT;
-extern "user32" fn PostQuitMessage(exitCode: c_int) callconv(.winapi) void;
-extern "user32" fn LoadCursorW(
-    hInstance: ?HINSTANCE,
-    lpCursorName: ResourceNameW,
-) callconv(.winapi) ?HCURSOR;
-extern "user32" fn LoadIconW(
-    hInstance: ?HINSTANCE,
-    lpIconName: ResourceNameW,
-) callconv(.winapi) ?HICON;
-extern "kernel32" fn GetModuleHandleW(
-    lpModuleName: ?LPCWSTR,
-) callconv(.winapi) ?HINSTANCE;
 
 const class_name = std.unicode.utf8ToUtf16LeStringLiteral("GhosttyWindowClass");
 
 // Must stay in sync with dist/windows/ghostty.rc's ID_ICON_GHOSTTY.
 const ID_ICON_GHOSTTY: usize = 1;
 
-fn makeIntResource(id: usize) ResourceNameW {
-    return @ptrFromInt(id);
-}
-
 core_app: *CoreApp,
-hwnd: HWND,
+hwnd: win32.HWND,
 
 pub fn init(
     self: *App,
@@ -151,36 +40,47 @@ pub fn init(
     );
     defer core_app.alloc.free(title_w);
 
-    const hinstance = GetModuleHandleW(null) orelse {
+    // NOTE: we want to use a DPI-aware window
+    if (false) {}
+    else if (win32.SetProcessDpiAwarenessContext(win32.DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2)) |_| {}
+    else if (win32.SetProcessDpiAwareness(win32.PROCESS_SYSTEM_DPI_AWARE)) |_| {}
+    else {
+        _ = win32.SetProcessDPIAware();
+    }
+
+    // NOTE: we want to tell windows to match the app to the user's preferred color scheme (light or dark)
+    _ = win32.SetPreferredAppMode(1);
+
+    const hinstance = win32.GetModuleHandleW(null) orelse {
         log.err("GetModuleHandleW failed", .{});
         return error.Win32GetModuleHandleFailed;
     };
 
-    const icon = LoadIconW(hinstance, makeIntResource(ID_ICON_GHOSTTY));
+    const icon = win32.LoadIconW(hinstance, win32.makeIntResource(ID_ICON_GHOSTTY));
     if (icon == null) {
-        log.warn("LoadIconW failed err={}", .{windows.GetLastError()});
+        log.warn("LoadIconW failed err={}", .{win32.GetLastError()});
     }
 
-    const wc: WNDCLASSEXW = .{
+    const wc: win32.WNDCLASSEXW = .{
         .lpfnWndProc = &wndProc,
         .hInstance = hinstance,
         .hIcon = icon,
-        .hCursor = LoadCursorW(null, IDC_ARROW),
+        .hCursor = win32.LoadCursorW(null, win32.IDC_ARROW),
         .lpszClassName = class_name,
         .hIconSm = icon,
     };
-    if (RegisterClassExW(&wc) == 0) {
-        log.err("RegisterClassExW failed err={}", .{windows.GetLastError()});
+    if (win32.RegisterClassExW(&wc) == 0) {
+        log.err("RegisterClassExW failed err={}", .{win32.GetLastError()});
         return error.Win32RegisterClassFailed;
     }
 
-    const hwnd = CreateWindowExW(
+    const hwnd = win32.CreateWindowExW(
         0,
         class_name,
         title_w,
-        WS_OVERLAPPEDWINDOW,
-        CW_USEDEFAULT,
-        CW_USEDEFAULT,
+        win32.WS_OVERLAPPEDWINDOW,
+        win32.CW_USEDEFAULT,
+        win32.CW_USEDEFAULT,
         800,
         600,
         null,
@@ -188,7 +88,7 @@ pub fn init(
         hinstance,
         null,
     ) orelse {
-        log.err("CreateWindowExW failed err={}", .{windows.GetLastError()});
+        log.err("CreateWindowExW failed err={}", .{win32.GetLastError()});
         return error.Win32CreateWindowFailed;
     };
 
@@ -199,13 +99,13 @@ pub fn init(
 }
 
 pub fn run(self: *App) !void {
-    _ = ShowWindow(self.hwnd, SW_SHOWDEFAULT);
-    _ = UpdateWindow(self.hwnd);
+    _ = win32.ShowWindow(self.hwnd, win32.SW_SHOWDEFAULT);
+    _ = win32.UpdateWindow(self.hwnd);
 
-    var msg: MSG = undefined;
-    while (GetMessageW(&msg, null, 0, 0) > 0) {
-        _ = TranslateMessage(&msg);
-        _ = DispatchMessageW(&msg);
+    var msg: win32.MSG = undefined;
+    while (win32.GetMessageW(&msg, null, 0, 0) > 0) {
+        _ = win32.TranslateMessage(&msg);
+        _ = win32.DispatchMessageW(&msg);
     }
 }
 
@@ -227,22 +127,48 @@ pub fn performIpc(
 }
 
 fn wndProc(
-    hwnd: HWND,
-    msg: UINT,
-    wparam: WPARAM,
-    lparam: LPARAM,
-) callconv(.winapi) LRESULT {
+    hwnd: win32.HWND,
+    msg: win32.UINT,
+    wparam: win32.WPARAM,
+    lparam: win32.LPARAM,
+) callconv(.winapi) win32.LRESULT {
     switch (msg) {
-        WM_CLOSE => {
-            _ = DestroyWindow(hwnd);
+        win32.WM_CLOSE => {
+            _ = win32.DestroyWindow(hwnd);
             return 0;
         },
-        WM_DESTROY => {
-            PostQuitMessage(0);
+        win32.WM_CREATE => {
+            // NOTE: set up window to match the OS-native dark theme or not
+            var use_light_theme: win32.DWORD = 0;
+            var dataSize: win32.DWORD = @sizeOf(win32.DWORD);
+            const status = win32.RegGetValueA(
+                win32.HKEY_CURRENT_USER,
+                "Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize",
+                "AppsUseLightTheme",
+                win32.RRF_RT_ANY,
+                null,
+                &use_light_theme,
+                &dataSize,
+            );
+
+            if (status == win32.ERROR_SUCCESS) {
+                if (use_light_theme == 0) {
+                    var value: win32.BOOL = 1;
+                    _ = win32.DwmSetWindowAttribute(hwnd, win32.DWMWA_USE_IMMERSIVE_DARK_MODE, &value, @sizeOf(win32.BOOL));
+                }
+            }
+
+            return win32.DefWindowProcW(hwnd, msg, wparam, lparam);
+        },
+        win32.WM_DESTROY => {
+            win32.PostQuitMessage(0);
             return 0;
+        },
+        win32.WM_PAINT => {
+            _ = win32.InvalidateRect(hwnd, null, 1);
         },
         else => {},
     }
 
-    return DefWindowProcW(hwnd, msg, wparam, lparam);
+    return win32.DefWindowProcW(hwnd, msg, wparam, lparam);
 }
