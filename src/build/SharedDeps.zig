@@ -544,6 +544,13 @@ pub fn add(
         step.root_module.addImport("zf", dep.module("zf"));
     }
 
+    if (step.rootModuleTarget().os.tag == .windows and
+        self.config.renderer == .directx11)
+    {
+        step.root_module.linkSystemLibrary("d3d11", .{});
+        step.root_module.linkSystemLibrary("dxgi", .{});
+    }
+
     // Mac Stuff
     if (step.rootModuleTarget().os.tag.isDarwin()) {
         if (b.lazyDependency("zig_objc", .{

@@ -30,6 +30,7 @@ pub const HMENU = windows.HMENU;
 // Library-specific
 pub const CW_USEDEFAULT: c_int = @bitCast(@as(u32, 0x80000000));
 pub const WS_OVERLAPPEDWINDOW: DWORD = 0x00CF0000;
+pub const WS_POPUP: DWORD = 0x80000000;
 pub const SW_SHOWDEFAULT: c_int = 10;
 
 pub const WM_CREATE: UINT = 0x0001;
@@ -39,6 +40,7 @@ pub const WM_SIZE: UINT = 0x0005;
 pub const WM_PAINT: UINT = 0x000F;
 pub const WM_SETTINGCHANGE: UINT = 0x001A;
 pub const WM_DWMCOLORIZATIONCOLORCHANGED: UINT = 0x0320;
+pub const WM_APP: UINT = 0x8000;
 
 pub const IDC_ARROW: ResourceNameW = @ptrFromInt(32512);
 
@@ -72,6 +74,15 @@ pub const RECT = extern struct {
 };
 
 pub const POINT = extern struct { x: i32, y: i32 };
+
+pub const PAINTSTRUCT = extern struct {
+    hdc: HANDLE,
+    fErase: BOOL,
+    rcPaint: RECT,
+    fRestore: BOOL,
+    fIncUpdate: BOOL,
+    rgbReserved: [32]u8,
+};
 
 pub const MSG = extern struct {
     hwnd: ?HWND,
@@ -182,6 +193,13 @@ pub extern "user32" fn TranslateMessage(msg: *const MSG) callconv(.winapi) BOOL;
 pub extern "user32" fn DispatchMessageW(msg: *const MSG) callconv(.winapi) LRESULT;
 
 pub extern "user32" fn PostQuitMessage(exitCode: c_int) callconv(.winapi) void;
+
+pub extern "user32" fn PostMessageW(
+    hwnd: ?HWND,
+    msg: UINT,
+    wparam: WPARAM,
+    lparam: LPARAM,
+) callconv(.winapi) BOOL;
 
 pub extern "user32" fn LoadCursorW(
     hInstance: ?HINSTANCE,
@@ -327,6 +345,16 @@ pub extern "gdi32" fn FillRect(
 pub extern "user32" fn GetClientRect(
     hwnd: HWND,
     lpRect: *RECT,
+) callconv(.winapi) BOOL;
+
+pub extern "user32" fn BeginPaint(
+    hwnd: HWND,
+    lpPaint: *PAINTSTRUCT,
+) callconv(.winapi) ?HANDLE;
+
+pub extern "user32" fn EndPaint(
+    hwnd: HWND,
+    lpPaint: *const PAINTSTRUCT,
 ) callconv(.winapi) BOOL;
 
 pub extern "user32" fn SetWindowLongPtrW(

@@ -10,6 +10,7 @@ const configpkg = @import("../../config.zig");
 const Config = configpkg.Config;
 
 const win32 = @import("./win32.zig");
+const Surface = @import("Surface.zig");
 
 const log = std.log.scoped(.win32);
 
@@ -17,6 +18,10 @@ const class_name = std.unicode.utf8ToUtf16LeStringLiteral("GhosttyWindowClass");
 
 // @Sync: must stay in sync with dist/windows/ghostty.rc's ID_ICON_GHOSTTY
 const ID_ICON_GHOSTTY: usize = 1;
+
+const WM_WAKEUP: win32.UINT = win32.WM_APP + 1;
+
+pub const must_draw_from_app_thread = true;
 
 core_app: *CoreApp,
 hwnd: win32.HWND,
@@ -97,6 +102,37 @@ pub fn init(
         return error.Win32CreateWindowFailed;
     };
     self.hwnd = hwnd;
+
+    const surface = try core_app.alloc.create(Surface);
+    errdefer core_app.alloc.destroy(surface);
+    try surface.init(self, &config);
+    try core_app.addSurface(surface);
+}
+
+pub fn performAction(
+    self: *App,
+    target: apprt.Target,
+    comptime action: apprt.Action.Key,
+    value: apprt.Action.Value(action),
+) !bool {
+    _ = self;
+    _ = value;
+
+    switch (action) {
+        .render => switch (target) {
+            .surface => |surface| surface.draw() catch |err| {
+                log.warn("error drawing surface err={}", .{err});
+            },
+            .app => {},
+        },
+
+        // Acknowledged but not acted on yet.
+        .quit_timer, .cell_size, .size_limit => {},
+
+        else => return false,
+    }
+
+    return true;
 }
 
 pub fn run(self: *App) !void {
@@ -115,7 +151,7 @@ pub fn terminate(self: *App) void {
 }
 
 pub fn wakeup(self: *App) void {
-    _ = self;
+    _ = win32.PostMessageW(self.hwnd, WM_WAKEUP, 0, 0);
 }
 
 pub fn performIpc(
@@ -150,15 +186,19 @@ fn wndProc(
             win32.PostQuitMessage(0);
             return 0;
         },
-        win32.WM_PAINT => {
-            _ = win32.InvalidateRect(hwnd, null, 1);
-        },
-        win32.WM_ERASEBKGND => {
+        WM_WAKEUP => {
             const self: *App = @ptrFromInt(@as(usize, @bitCast(win32.GetWindowLongPtrW(hwnd, win32.GWLP_USERDATA))));
-            var rect: win32.RECT = undefined;
-            _ = win32.GetClientRect(hwnd, &rect);
-            _ = win32.FillRect(@ptrFromInt(wparam), &rect, self.bg_brush);
-            return 1;
+            self.core_app.tick(self) catch |err| {
+                log.warn("error ticking core app err={}", .{err});
+            };
+            return 0;
+        },
+        win32.WM_PAINT => {
+            var ps: win32.PAINTSTRUCT = undefined;
+            _ = win32.BeginPaint(hwnd, &ps);
+            // win32_resize_callback(window_handle);
+            _ = win32.EndPaint(hwnd, &ps);
+            return win32.DefWindowProcW(hwnd, msg, wparam, lparam);
         },
         win32.WM_SETTINGCHANGE => {
             if (lparam != 0) {
