@@ -1,5 +1,5 @@
-//! A minimal native Windows application runtime. Opens a single Win32
-//! window and pumps its message loop; no surfaces or rendering yet.
+/// This is the main entrypoint to the apprt for Ghostty on windows.
+/// Ghostty will initialize this in main to start the application..
 const App = @This();
 
 const std = @import("std");
@@ -15,11 +15,13 @@ const log = std.log.scoped(.win32);
 
 const class_name = std.unicode.utf8ToUtf16LeStringLiteral("GhosttyWindowClass");
 
-// Must stay in sync with dist/windows/ghostty.rc's ID_ICON_GHOSTTY.
+// @Sync: must stay in sync with dist/windows/ghostty.rc's ID_ICON_GHOSTTY
 const ID_ICON_GHOSTTY: usize = 1;
 
 core_app: *CoreApp,
 hwnd: win32.HWND,
+bg_brush: win32.HBRUSH,
+use_light_theme: win32.DWORD = 0,
 
 pub fn init(
     self: *App,
@@ -27,6 +29,8 @@ pub fn init(
     opts: struct {},
 ) !void {
     _ = opts;
+
+    self.core_app = core_app;
 
     var config = Config.load(core_app.alloc) catch |err| err: {
         log.warn("error loading configuration, using defaults err={}", .{err});
@@ -74,6 +78,7 @@ pub fn init(
         return error.Win32RegisterClassFailed;
     }
 
+    self.bg_brush = @ptrCast(win32.GetStockObject(win32.BLACK_BRUSH));
     const hwnd = win32.CreateWindowExW(
         0,
         class_name,
@@ -86,16 +91,12 @@ pub fn init(
         null,
         null,
         hinstance,
-        null,
+        self,
     ) orelse {
         log.err("CreateWindowExW failed err={}", .{win32.GetLastError()});
         return error.Win32CreateWindowFailed;
     };
-
-    self.* = .{
-        .core_app = core_app,
-        .hwnd = hwnd,
-    };
+    self.hwnd = hwnd;
 }
 
 pub fn run(self: *App) !void {
@@ -138,26 +139,11 @@ fn wndProc(
             return 0;
         },
         win32.WM_CREATE => {
-            // NOTE: set up window to match the OS-native dark theme or not
-            var use_light_theme: win32.DWORD = 0;
-            var dataSize: win32.DWORD = @sizeOf(win32.DWORD);
-            const status = win32.RegGetValueA(
-                win32.HKEY_CURRENT_USER,
-                "Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize",
-                "AppsUseLightTheme",
-                win32.RRF_RT_ANY,
-                null,
-                &use_light_theme,
-                &dataSize,
-            );
-
-            if (status == win32.ERROR_SUCCESS) {
-                if (use_light_theme == 0) {
-                    var value: win32.BOOL = 1;
-                    _ = win32.DwmSetWindowAttribute(hwnd, win32.DWMWA_USE_IMMERSIVE_DARK_MODE, &value, @sizeOf(win32.BOOL));
-                }
-            }
-
+            const cs: *win32.CREATESTRUCTW = @ptrFromInt(@as(usize, @bitCast(lparam)));
+            const self: *App = @ptrCast(@alignCast(cs.lpCreateParams));
+            _ = win32.SetWindowLongPtrW(hwnd, win32.GWLP_USERDATA, @bitCast(@intFromPtr(self)));
+            self.hwnd = hwnd;
+            self.updateTheme();
             return win32.DefWindowProcW(hwnd, msg, wparam, lparam);
         },
         win32.WM_DESTROY => {
@@ -167,8 +153,52 @@ fn wndProc(
         win32.WM_PAINT => {
             _ = win32.InvalidateRect(hwnd, null, 1);
         },
+        win32.WM_ERASEBKGND => {
+            const self: *App = @ptrFromInt(@as(usize, @bitCast(win32.GetWindowLongPtrW(hwnd, win32.GWLP_USERDATA))));
+            var rect: win32.RECT = undefined;
+            _ = win32.GetClientRect(hwnd, &rect);
+            _ = win32.FillRect(@ptrFromInt(wparam), &rect, self.bg_brush);
+            return 1;
+        },
+        win32.WM_SETTINGCHANGE => {
+            if (lparam != 0) {
+                const str: [*:0]const u16 = @ptrFromInt(@as(usize, @bitCast(lparam)));
+                const slice = std.mem.span(str);
+                if (std.mem.eql(u16, slice, std.unicode.utf8ToUtf16LeStringLiteral("ImmersiveColorSet"))) {
+                    const self: *App = @ptrFromInt(@as(usize, @bitCast(win32.GetWindowLongPtrW(hwnd, win32.GWLP_USERDATA))));
+                    self.updateTheme();
+                    _ = win32.InvalidateRect(hwnd, null, 1);
+                }
+            }
+        },
+        win32.WM_DWMCOLORIZATIONCOLORCHANGED => {
+            const self: *App = @ptrFromInt(@as(usize, @bitCast(win32.GetWindowLongPtrW(hwnd, win32.GWLP_USERDATA))));
+            self.updateTheme();
+            _ = win32.InvalidateRect(hwnd, null, 1);
+        },
         else => {},
     }
 
     return win32.DefWindowProcW(hwnd, msg, wparam, lparam);
+}
+
+fn updateTheme(self: *App) void {
+    self.use_light_theme = 0;
+    var dataSize: win32.DWORD = @sizeOf(win32.DWORD);
+    const status = win32.RegGetValueA(
+        win32.HKEY_CURRENT_USER,
+        "Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize",
+        "AppsUseLightTheme",
+        win32.RRF_RT_ANY,
+        null,
+        &self.use_light_theme,
+        &dataSize,
+    );
+
+    if (status == win32.ERROR_SUCCESS) {
+        var value: win32.BOOL = if (self.use_light_theme == 0) 1 else 0;
+        _ = win32.DwmSetWindowAttribute(self.hwnd, win32.DWMWA_USE_IMMERSIVE_DARK_MODE, &value, @sizeOf(win32.BOOL));
+    }
+
+    self.bg_brush = @ptrCast(win32.GetStockObject(if (self.use_light_theme == 0) win32.BLACK_BRUSH else win32.WHITE_BRUSH));
 }

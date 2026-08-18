@@ -37,6 +37,8 @@ pub const WM_DESTROY: UINT = 0x0002;
 pub const WM_CLOSE: UINT = 0x0010;
 pub const WM_SIZE: UINT = 0x0005;
 pub const WM_PAINT: UINT = 0x000F;
+pub const WM_SETTINGCHANGE: UINT = 0x001A;
+pub const WM_DWMCOLORIZATIONCOLORCHANGED: UINT = 0x0320;
 
 pub const IDC_ARROW: ResourceNameW = @ptrFromInt(32512);
 
@@ -50,6 +52,12 @@ pub const HKEY_CURRENT_USER: HKEY = @ptrFromInt(0x80000001);
 
 pub const DWMWA_USE_IMMERSIVE_DARK_MODE: DWORD = 20;
 pub const RRF_RT_ANY: DWORD = 0x0000ffff;
+
+pub const HGDIOBJ = *anyopaque;
+pub const GWLP_USERDATA: c_int = -21;
+pub const WHITE_BRUSH: c_int = 0;
+pub const BLACK_BRUSH: c_int = 4;
+pub const WM_ERASEBKGND: UINT = 0x0014;
 
 // align(1) because MAKEINTRESOURCE-style values aren't necessarily 2-byte aligned
 pub const ResourceNameA = [*:0]align(1) const u8;
@@ -72,6 +80,21 @@ pub const MSG = extern struct {
     lParam: LPARAM,
     time: DWORD,
     pt: POINT,
+};
+
+pub const CREATESTRUCTW = extern struct {
+    lpCreateParams: ?*anyopaque,
+    hInstance: HINSTANCE,
+    hMenu: ?HMENU,
+    hwndParent: ?HWND,
+    cy: c_int,
+    cx: c_int,
+    y: c_int,
+    x: c_int,
+    style: c_long,
+    lpszName: ?LPCWSTR,
+    lpszClass: ?LPCWSTR,
+    dwExStyle: DWORD,
 };
 
 // Basic Helpers
@@ -286,7 +309,33 @@ pub fn SetPreferredAppMode(mode: DWORD) ?DWORD {
 }
 
 pub extern "user32" fn InvalidateRect(
-    hwnd: ?HWND,
+    hwnd: HWND,
     lpRect: ?*const RECT,
     bErase: BOOL,
 ) callconv(.winapi) BOOL;
+
+pub extern "gdi32" fn CreateSolidBrush(color: DWORD) callconv(.winapi) HBRUSH;
+
+pub extern "gdi32" fn GetStockObject(i: c_int) callconv(.winapi) HGDIOBJ;
+
+pub extern "gdi32" fn FillRect(
+    hdc: HANDLE,
+    lprc: *const RECT,
+    hbr: HBRUSH,
+) callconv(.winapi) c_int;
+
+pub extern "user32" fn GetClientRect(
+    hwnd: HWND,
+    lpRect: *RECT,
+) callconv(.winapi) BOOL;
+
+pub extern "user32" fn SetWindowLongPtrW(
+    hwnd: HWND,
+    nIndex: c_int,
+    dwNewLong: isize,
+) callconv(.winapi) isize;
+
+pub extern "user32" fn GetWindowLongPtrW(
+    hwnd: HWND,
+    nIndex: c_int,
+) callconv(.winapi) isize;
