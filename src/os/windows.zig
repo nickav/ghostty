@@ -24,6 +24,7 @@ pub const HINSTANCE = windows.HINSTANCE;
 pub const HPCON = windows.LPVOID;
 pub const HRESULT = c_long;
 pub const LARGE_INTEGER = windows.LARGE_INTEGER;
+pub const LPCVOID = windows.LPCVOID;
 pub const LPCWSTR = windows.LPCWSTR;
 pub const LPSTR = windows.LPSTR;
 pub const LPVOID = windows.LPVOID;
@@ -234,6 +235,13 @@ pub const exp = struct {
             lpBuffer: LPVOID,
             nNumberOfBytesToRead: DWORD,
             lpNumberOfBytesRead: ?*DWORD,
+            lpOverlapped: ?*OVERLAPPED,
+        ) callconv(.winapi) BOOL;
+        pub extern "kernel32" fn WriteFile(
+            hFile: HANDLE,
+            lpBuffer: LPCVOID,
+            nNumberOfBytesToWrite: DWORD,
+            lpNumberOfBytesWritten: ?*DWORD,
             lpOverlapped: ?*OVERLAPPED,
         ) callconv(.winapi) BOOL;
     };

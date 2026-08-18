@@ -11,6 +11,11 @@ pub const Runtime = enum {
     /// approach to building the application.
     gtk,
 
+    /// A minimal native Windows application runtime built on the Win32
+    /// API. Early scaffold: opens a window and pumps its message loop,
+    /// no surfaces or rendering yet.
+    win32,
+
     pub fn default(target: std.Target) Runtime {
         return switch (target.os.tag) {
             // The Linux and FreeBSD default is GTK because it is a full
@@ -18,7 +23,8 @@ pub const Runtime = enum {
             .linux, .freebsd => .gtk,
             // Otherwise, we do NONE so we don't create an exe and we create
             // libghostty. On macOS, Xcode is used to build the app that links
-            // to libghostty.
+            // to libghostty. Windows defaults to none too; pass
+            // `-Dapp-runtime=win32` explicitly to opt into the scaffold.
             else => .none,
         };
     }

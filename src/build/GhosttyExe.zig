@@ -43,6 +43,13 @@ pub fn init(b: *std.Build, cfg: *const Config, deps: *const SharedDeps) !Ghostty
     switch (cfg.target.result.os.tag) {
         .windows => {
             exe.subsystem = .Windows;
+
+            // Ghostty declares `pub fn main`, which Zig exports as a
+            // plain C `main` symbol, not `WinMain`. The GUI subsystem's
+            // default CRT entry (`WinMainCRTStartup`) expects `WinMain`
+            // and fails to link without this override.
+            exe.entry = .{ .symbol_name = "mainCRTStartup" };
+
             exe.root_module.addWin32ResourceFile(.{
                 .file = b.path("dist/windows/ghostty.rc"),
             });

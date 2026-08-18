@@ -690,6 +690,7 @@ pub fn add(
         switch (self.config.app_runtime) {
             .none => {},
             .gtk => try self.addGtkNg(step),
+            .win32 => self.addWin32(step),
         }
     }
 
@@ -698,6 +699,16 @@ pub fn add(
     self.framedata.addImport(step);
 
     return static_libs;
+}
+
+fn addWin32(
+    self: *const SharedDeps,
+    step: *std.Build.Step.Compile,
+) void {
+    _ = self;
+    step.root_module.linkSystemLibrary("user32", .{});
+    step.root_module.linkSystemLibrary("gdi32", .{});
+    step.root_module.linkSystemLibrary("kernel32", .{});
 }
 
 /// Setup the dependencies for the GTK apprt build.
