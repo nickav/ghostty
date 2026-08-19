@@ -7,6 +7,7 @@
 #define UNICODE
 #define _UNICODE
 #include <windows.h>
+#include <imm.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -25,6 +26,7 @@ extern void WINAPI glViewport(int x, int y, int width, int height);
 
 typedef HRESULT Win32_DwmSetWindowAttribute(HWND hwnd, DWORD dwAttribute, LPCVOID pvAttribute, DWORD cbAttribute);
 static Win32_DwmSetWindowAttribute *DwmSetWindowAttribute = NULL;
+
 #ifndef DWMWA_USE_IMMERSIVE_DARK_MODE
 #define DWMWA_USE_IMMERSIVE_DARK_MODE 20
 #endif
@@ -505,19 +507,30 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lpara
             uint32_t unshifted = 0;
             {
                 UINT result = MapVirtualKeyW((UINT)wparam, MAPVK_VK_TO_CHAR);
-                uint32_t cp = result & 0xFFFF; // high bit = dead key, ignore for now
+                uint32_t cp = result & 0xFFFF;
                 if (cp > 0) unshifted = cp;
             }
+
+            ghostty_input_mods_e mods = win32__get_keyboard_mods();
+
+            //
+            // We apply a simple heuristic here that has worked for years
+            // so far: control and command never contribute to the translation of text,
+            // assume everything else did.
+            //
+            // @See NSEvent+Extension.swift
+            //
+            ghostty_input_mods_e consumed_mods = mods & ~(GHOSTTY_MODS_SHIFT | GHOSTTY_MODS_SUPER);
 
             ghostty_input_key_s event;
             ZeroMemory(&event, sizeof(event));
 
             event.action = key_released ? GHOSTTY_ACTION_RELEASE : was_down ? GHOSTTY_ACTION_REPEAT : GHOSTTY_ACTION_PRESS;
-            event.mods = win32__get_keyboard_mods();
-            event.consumed_mods = GHOSTTY_MODS_NONE;
+            event.mods = mods;
+            event.consumed_mods = consumed_mods;
             event.keycode = native_keycode;
-            event.text = NULL;
             event.unshifted_codepoint = unshifted;
+            event.text = NULL;
             event.composing = false;
 
             if (g_surface)
@@ -668,25 +681,58 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lpara
 
         case WM_IME_REQUEST:
         {
-            /*
-            switch (w_param)
+            switch (wparam)
             {
                 case IMR_QUERYCHARPOSITION:
                 {
-                    IMECHARPOSITION *char_pos = (IMECHARPOSITION *)l_param;
+                    IMECHARPOSITION *char_pos = (IMECHARPOSITION *)lparam;
                     char_pos->dwSize = sizeof(IMECHARPOSITION);
                     char_pos->pt.x = 0;
                     char_pos->pt.y = 0;
-                    // char_pos->cLineHeight = ;
-                    // char_pos->rcDocument.left = ;
-                    // char_pos->rcDocument.top = ;
-                    // char_pos->rcDocument.right = ;
-                    // char_pos->rcDocument.bottom = ;
+                    char_pos->cLineHeight = 0;
+                    char_pos->rcDocument.left = 0;
+                    char_pos->rcDocument.top = 0;
+                    char_pos->rcDocument.right = 0;
+                    char_pos->rcDocument.bottom = 0;
 
-                    result = true;
+                    if (g_surface)
+                    {
+                        double x, y, width, height;
+                        ghostty_surface_ime_point(g_surface, &x, &y, &width, &height);
+
+                        double scale = win32__get_scale_factor(hwnd);
+                        POINT pt;
+                        pt.x = (LONG)(x * scale);
+                        pt.y = (LONG)(y * scale);
+                        LONG px_height = (LONG)(height * scale);
+
+                        //
+                        // A POINT structure containing the coordinate of the top left point of requested character in screen coordinates.
+                        // The top left point is based on the character baseline in any text flow.
+                        // From: https://learn.microsoft.com/en-us/windows/win32/api/imm/ns-imm-imecharposition
+                        //
+                        ClientToScreen(hwnd, &pt);
+
+                        char_pos->pt = pt;
+                        // Height of a line that contains the requested character, in pixels.
+                        char_pos->cLineHeight = px_height;
+
+                        // A RECT structure containing the editable area for text, in screen coordinates, for the application.
+                        RECT client_rect;
+                        GetClientRect(hwnd, &client_rect);
+                        POINT top_left = { client_rect.left, client_rect.top };
+                        POINT bottom_right = { client_rect.right, client_rect.bottom };
+                        ClientToScreen(hwnd, &top_left);
+                        ClientToScreen(hwnd, &bottom_right);
+                        char_pos->rcDocument.left = top_left.x;
+                        char_pos->rcDocument.top = top_left.y;
+                        char_pos->rcDocument.right = bottom_right.x;
+                        char_pos->rcDocument.bottom = bottom_right.y;
+                    }
+
+                    return true;
                 } break;
             }
-            */
         } break;
 
         case WM_DROPFILES:
