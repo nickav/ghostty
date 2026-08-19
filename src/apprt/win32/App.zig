@@ -9,6 +9,7 @@ const CoreApp = @import("../../App.zig");
 const configpkg = @import("../../config.zig");
 const Config = configpkg.Config;
 const input = @import("../../input.zig");
+const global = @import("../../global.zig");
 
 const win32 = @import("./win32.zig");
 const gl = @import("./gl.zig");
@@ -121,7 +122,7 @@ pub fn init(
     //
     // NOTE(nick): this is a hack to get this working at all
     // In the future, surface should own it's own HWND (unless we only want one copy of the app per window, which would maybe work as well).
-    // Either way, this needs to be though through more!
+    // Either way, this needs to be thought through more!
     // :SurfaceShouldOwnTheHWND
     //
     self.hwnd = hwnd;
@@ -167,18 +168,6 @@ pub fn performAction(
     return true;
 }
 
-fn pollEvents() void {
-    while (true) {
-        var msg: win32.MSG = std.mem.zeroes(win32.MSG);
-        if (win32.PeekMessageW(&msg, null, 0, 0, win32.PM_REMOVE) == 0) {
-            break;
-        }
-
-        _ = win32.TranslateMessage(&msg);
-        _ = win32.DispatchMessageW(&msg);
-    }
-}
-
 pub fn run(self: *App) !void {
     _ = win32.ShowWindow(self.hwnd, win32.SW_SHOWDEFAULT);
     _ = win32.UpdateWindow(self.hwnd);
@@ -186,15 +175,10 @@ pub fn run(self: *App) !void {
     // Without this, sleeping on windows is very inaccurate.
     _ = win32.timeBeginPeriod(1);
 
-    // var msg: win32.MSG = undefined;
-    // while (win32.GetMessageW(&msg, null, 0, 0) > 0) {
-    //     _ = win32.TranslateMessage(&msg);
-    //     _ = win32.DispatchMessageW(&msg);
-    // }
-
-    while (true) {
-        pollEvents();
-        win32.Sleep(1);
+    var msg: win32.MSG = undefined;
+    while (win32.GetMessageW(&msg, null, 0, 0) > 0) {
+        _ = win32.TranslateMessage(&msg);
+        _ = win32.DispatchMessageW(&msg);
     }
 }
 
@@ -304,42 +288,43 @@ fn wndProc(
                 }
             }
 
+            var mods: input.Mods = .{};
+            if (win32.GetKeyState(win32.VK_CONTROL) < 0) {
+                mods.ctrl = true;
+            }
+            if (win32.GetKeyState(win32.VK_SHIFT) < 0) {
+                mods.shift = true;
+            }
+            if (win32.GetKeyState(win32.VK_MENU) < 0) {
+                mods.alt = true;
+            }
+            if (win32.GetKeyState(win32.VK_LWIN) < 0 or win32.GetKeyState(win32.VK_RWIN) < 0) {
+                mods.super = true;
+            }
+
+            const action: input.Action = if (msg == win32.WM_KEYUP or msg == win32.WM_SYSKEYUP)
+                .release
+            else if (win32.wasKeyDown(lparam))
+                .repeat
+            else
+                .press;
+
+            const key = mapKey(lparam);
+
+            const event: input.KeyEvent = .{
+                .action = action,
+                .key = key,
+                .mods = mods,
+                .unshifted_codepoint = blk: {
+                    const result = win32.MapVirtualKeyW(@intCast(wparam), win32.MAPVK_VK_TO_CHAR);
+                    // High bit set means it's a dead key; low 16 bits are the char.
+                    const cp: u21 = @intCast(result & 0xFFFF);
+                    break :blk if (cp > 0) cp else 0;
+                },
+                // .consumed_mods = ,
+            };
+
             if (self.surface) |surface| {
-                var mods: input.Mods = .{};
-                if (win32.GetKeyState(win32.VK_CONTROL) < 0) {
-                    mods.ctrl = true;
-                }
-                if (win32.GetKeyState(win32.VK_SHIFT) < 0) {
-                    mods.shift = true;
-                }
-                if (win32.GetKeyState(win32.VK_MENU) < 0) {
-                    mods.alt = true;
-                }
-                if (win32.GetKeyState(win32.VK_LWIN) < 0 or win32.GetKeyState(win32.VK_RWIN) < 0) {
-                    mods.super = true;
-                }
-
-                const action: input.Action = if (msg == win32.WM_KEYUP or msg == win32.WM_SYSKEYUP)
-                    .release
-                else if (win32.wasKeyDown(lparam))
-                    .repeat
-                else
-                    .press;
-
-                const key = mapKey(lparam);
-
-                const event: input.KeyEvent = .{
-                    .action = action,
-                    .key = key,
-                    .mods = mods,
-                    .unshifted_codepoint = blk: {
-                        const result = win32.MapVirtualKeyW(@intCast(wparam), win32.MAPVK_VK_TO_CHAR);
-                        // High bit set means it's a dead key; low 16 bits are the char.
-                        const cp: u21 = @intCast(result & 0xFFFF);
-                        break :blk if (cp > 0) cp else 0;
-                    },
-                    // .consumed_mods = ,
-                };
                 if (event.key != input.Key.unidentified) {
                     const effect = surface.core().keyCallback(event) catch |err| effect: {
                         std.log.err("keyCallback failed: {}", .{err});
@@ -382,6 +367,7 @@ fn wndProc(
                                 const event: input.KeyEvent = .{
                                     .utf8 = utf8_text,
                                 };
+                                log.warn("[TIMING] WM_CHAR keyCallback cp={d} t={d}ms", .{ cp, @divTrunc(std.Io.Timestamp.now(global.io(), .awake).nanoseconds, std.time.ns_per_ms) });
                                 const effect = surface.core().keyCallback(event) catch |err| effect: {
                                     std.log.err("keyCallback failed: {}", .{err});
                                     break :effect .ignored;
