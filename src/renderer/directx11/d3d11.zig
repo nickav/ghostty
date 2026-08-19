@@ -19,13 +19,13 @@ pub const IID_ID3D11Texture2D: GUID = .{
 
 pub const GenericMethod = *const anyopaque;
 
-pub fn vtableOf(comptime VTable: type, obj: *anyopaque) *const VTable {
-    return @as(*const *const VTable, @ptrCast(@alignCast(obj))).*;
+pub fn vtableOf(comptime VTable: type, self: anytype) *const VTable {
+    return @as(*const *const VTable, @ptrCast(@alignCast(self))).*;
 }
 
-pub fn safeRelease(obj: ?*anyopaque) void {
+pub fn safeRelease(obj: anytype) void {
     const o = obj orelse return;
-    _ = vtableOf(IUnknownVTable, o).Release(o);
+    _ = o.Release();
 }
 
 pub const IUnknownVTable = extern struct {
@@ -34,55 +34,137 @@ pub const IUnknownVTable = extern struct {
     Release: *const fn (*anyopaque) callconv(.winapi) u32,
 };
 
-pub const IDXGISwapChainVTable = extern struct {
-    QueryInterface: *const fn (*anyopaque, *const GUID, *?*anyopaque) callconv(.winapi) HRESULT,
-    AddRef: *const fn (*anyopaque) callconv(.winapi) u32,
-    Release: *const fn (*anyopaque) callconv(.winapi) u32,
-    // IDXGIObject: SetPrivateData, SetPrivateDataInterface, GetPrivateData, GetParent
-    // IDXGIDeviceSubObject: GetDevice
-    _pad0: [5]GenericMethod,
-    Present: *const fn (*anyopaque, UINT, UINT) callconv(.winapi) HRESULT,
-    GetBuffer: *const fn (*anyopaque, UINT, *const GUID, *?*anyopaque) callconv(.winapi) HRESULT,
+pub const IDXGISwapChain = opaque {
+    pub const VTable = extern struct {
+        unknown: IUnknownVTable,
+        // IDXGIObject: SetPrivateData, SetPrivateDataInterface, GetPrivateData, GetParent
+        // IDXGIDeviceSubObject: GetDevice
+        _pad0: [5]GenericMethod,
+        Present: *const fn (*anyopaque, UINT, UINT) callconv(.winapi) HRESULT,
+        GetBuffer: *const fn (*anyopaque, UINT, *const GUID, *?*anyopaque) callconv(.winapi) HRESULT,
+    };
+
+    pub fn AddRef(self: *IDXGISwapChain) u32 {
+        return vtableOf(VTable, self).unknown.AddRef(self);
+    }
+
+    pub fn Release(self: *IDXGISwapChain) u32 {
+        return vtableOf(VTable, self).unknown.Release(self);
+    }
+
+    pub fn Present(self: *IDXGISwapChain, sync_interval: UINT, flags: UINT) HRESULT {
+        return vtableOf(VTable, self).Present(self, sync_interval, flags);
+    }
+
+    pub fn GetBuffer(self: *IDXGISwapChain, index: UINT, iid: *const GUID, out: *?*anyopaque) HRESULT {
+        return vtableOf(VTable, self).GetBuffer(self, index, iid, out);
+    }
 };
 
 // Up through ID3D11Device::CreateRenderTargetView (index 9).
-pub const ID3D11DeviceVTable = extern struct {
-    QueryInterface: *const fn (*anyopaque, *const GUID, *?*anyopaque) callconv(.winapi) HRESULT,
-    AddRef: *const fn (*anyopaque) callconv(.winapi) u32,
-    Release: *const fn (*anyopaque) callconv(.winapi) u32,
-    // CreateBuffer, CreateTexture1D, CreateTexture2D, CreateTexture3D,
-    // CreateShaderResourceView, CreateUnorderedAccessView
-    _pad0: [6]GenericMethod,
-    CreateRenderTargetView: *const fn (
-        *anyopaque,
-        *anyopaque,
-        ?*const anyopaque,
-        *?*anyopaque,
-    ) callconv(.winapi) HRESULT,
+pub const ID3D11Device = opaque {
+    pub const VTable = extern struct {
+        unknown: IUnknownVTable,
+        // CreateBuffer, CreateTexture1D, CreateTexture2D, CreateTexture3D,
+        // CreateShaderResourceView, CreateUnorderedAccessView
+        _pad0: [6]GenericMethod,
+        CreateRenderTargetView: *const fn (
+            *anyopaque,
+            *anyopaque,
+            ?*const anyopaque,
+            *?*anyopaque,
+        ) callconv(.winapi) HRESULT,
+    };
+
+    pub fn AddRef(self: *ID3D11Device) u32 {
+        return vtableOf(VTable, self).unknown.AddRef(self);
+    }
+
+    pub fn Release(self: *ID3D11Device) u32 {
+        return vtableOf(VTable, self).unknown.Release(self);
+    }
+
+    pub fn CreateRenderTargetView(
+        self: *ID3D11Device,
+        resource: *anyopaque,
+        desc: ?*const anyopaque,
+        out: *?*anyopaque,
+    ) HRESULT {
+        return vtableOf(VTable, self).CreateRenderTargetView(self, resource, desc, out);
+    }
 };
 
 // Up through ID3D11DeviceContext::ClearRenderTargetView (index 50).
-pub const ID3D11DeviceContextVTable = extern struct {
-    QueryInterface: *const fn (*anyopaque, *const GUID, *?*anyopaque) callconv(.winapi) HRESULT,
-    AddRef: *const fn (*anyopaque) callconv(.winapi) u32,
-    Release: *const fn (*anyopaque) callconv(.winapi) u32,
-    // ID3D11DeviceChild: GetDevice, GetPrivateData, SetPrivateData, SetPrivateDataInterface
-    _pad0: [4]GenericMethod,
-    // VSSetConstantBuffers .. GSSetSamplers (indices 7-32)
-    _pad1: [26]GenericMethod,
-    OMSetRenderTargets: *const fn (
-        *anyopaque,
-        UINT,
-        ?[*]const ?*anyopaque,
-        ?*anyopaque,
-    ) callconv(.winapi) void,
-    // OMSetRenderTargetsAndUnorderedAccessViews .. CopyStructureCount (indices 34-49)
-    _pad2: [16]GenericMethod,
-    ClearRenderTargetView: *const fn (
-        *anyopaque,
-        *anyopaque,
-        *const [4]f32,
-    ) callconv(.winapi) void,
+pub const ID3D11DeviceContext = opaque {
+    pub const VTable = extern struct {
+        unknown: IUnknownVTable,
+        // ID3D11DeviceChild: GetDevice, GetPrivateData, SetPrivateData, SetPrivateDataInterface
+        _pad0: [4]GenericMethod,
+        // VSSetConstantBuffers .. GSSetSamplers (indices 7-32)
+        _pad1: [26]GenericMethod,
+        OMSetRenderTargets: *const fn (
+            *anyopaque,
+            UINT,
+            ?[*]const ?*anyopaque,
+            ?*anyopaque,
+        ) callconv(.winapi) void,
+        // OMSetRenderTargetsAndUnorderedAccessViews .. CopyStructureCount (indices 34-49)
+        _pad2: [16]GenericMethod,
+        ClearRenderTargetView: *const fn (
+            *anyopaque,
+            *anyopaque,
+            *const [4]f32,
+        ) callconv(.winapi) void,
+    };
+
+    pub fn AddRef(self: *ID3D11DeviceContext) u32 {
+        return vtableOf(VTable, self).unknown.AddRef(self);
+    }
+
+    pub fn Release(self: *ID3D11DeviceContext) u32 {
+        return vtableOf(VTable, self).unknown.Release(self);
+    }
+
+    pub fn OMSetRenderTargets(
+        self: *ID3D11DeviceContext,
+        num_views: UINT,
+        rtvs: ?[*]const ?*anyopaque,
+        dsv: ?*anyopaque,
+    ) void {
+        vtableOf(VTable, self).OMSetRenderTargets(self, num_views, rtvs, dsv);
+    }
+
+    pub fn ClearRenderTargetView(
+        self: *ID3D11DeviceContext,
+        rtv: *anyopaque,
+        color: *const [4]f32,
+    ) void {
+        vtableOf(VTable, self).ClearRenderTargetView(self, rtv, color);
+    }
+};
+
+pub const ID3D11RenderTargetView = opaque {
+    pub const VTable = IUnknownVTable;
+
+    pub fn AddRef(self: *ID3D11RenderTargetView) u32 {
+        return vtableOf(VTable, self).AddRef(self);
+    }
+
+    pub fn Release(self: *ID3D11RenderTargetView) u32 {
+        return vtableOf(VTable, self).Release(self);
+    }
+};
+
+pub const ID3D11Texture2D = opaque {
+    pub const VTable = IUnknownVTable;
+
+    pub fn AddRef(self: *ID3D11Texture2D) u32 {
+        return vtableOf(VTable, self).AddRef(self);
+    }
+
+    pub fn Release(self: *ID3D11Texture2D) u32 {
+        return vtableOf(VTable, self).Release(self);
+    }
 };
 
 pub const DXGI_RATIONAL = extern struct {
@@ -131,8 +213,8 @@ pub extern "d3d11" fn D3D11CreateDeviceAndSwapChain(
     FeatureLevels: UINT,
     SDKVersion: UINT,
     pSwapChainDesc: *const DXGI_SWAP_CHAIN_DESC,
-    ppSwapChain: ?*?*anyopaque,
-    ppDevice: ?*?*anyopaque,
+    ppSwapChain: ?*?*IDXGISwapChain,
+    ppDevice: ?*?*ID3D11Device,
     pFeatureLevel: ?*c_int,
-    ppImmediateContext: ?*?*anyopaque,
+    ppImmediateContext: ?*?*ID3D11DeviceContext,
 ) callconv(.winapi) HRESULT;

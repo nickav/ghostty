@@ -27,17 +27,10 @@ alloc: Allocator,
 /// Alpha blending mode.
 blending: configpkg.Config.AlphaBlending,
 
-/// ID3D11Device.
-device: *anyopaque,
-
-/// ID3D11DeviceContext.
-context: *anyopaque,
-
-/// IDXGISwapChain.
-swap_chain: *anyopaque,
-
-/// ID3D11RenderTargetView for the swap chain's back buffer.
-back_buffer_rtv: *anyopaque,
+device: *dx11.ID3D11Device,
+context: *dx11.ID3D11DeviceContext,
+swap_chain: *dx11.IDXGISwapChain,
+back_buffer_rtv: *dx11.ID3D11RenderTargetView,
 
 /// Size of the swap chain's back buffer. TODO: update on resize.
 width: u32,
@@ -54,9 +47,9 @@ pub fn init(alloc: Allocator, opts: rendererpkg.Options) !DirectX11 {
         .height = 600,
     };
 
-    var device: ?*anyopaque = null;
-    var context: ?*anyopaque = null;
-    var swap_chain: ?*anyopaque = null;
+    var device: ?*dx11.ID3D11Device = null;
+    var context: ?*dx11.ID3D11DeviceContext = null;
+    var swap_chain: ?*dx11.IDXGISwapChain = null;
     var feature_level: c_int = 0;
     const feature_levels = [_]c_int{dx11.D3D_FEATURE_LEVEL_11_0};
 
@@ -104,52 +97,43 @@ pub fn init(alloc: Allocator, opts: rendererpkg.Options) !DirectX11 {
     };
 }
 
-fn createBackBufferRtv(device: *anyopaque, swap_chain: *anyopaque) !*anyopaque {
+fn createBackBufferRtv(
+    device: *dx11.ID3D11Device,
+    swap_chain: *dx11.IDXGISwapChain,
+) !*dx11.ID3D11RenderTargetView {
     var back_buffer: ?*anyopaque = null;
-    const gb_hr = dx11.vtableOf(dx11.IDXGISwapChainVTable, swap_chain).GetBuffer(
-        swap_chain,
-        0,
-        &dx11.IID_ID3D11Texture2D,
-        &back_buffer,
-    );
+    const gb_hr = swap_chain.GetBuffer(0, &dx11.IID_ID3D11Texture2D, &back_buffer);
     if (gb_hr < 0 or back_buffer == null) {
         log.err("IDXGISwapChain::GetBuffer failed hr=0x{x}", .{@as(u32, @bitCast(gb_hr))});
         return error.D3D11GetBufferFailed;
     }
-    defer dx11.safeRelease(back_buffer);
+    defer dx11.safeRelease(@as(?*dx11.ID3D11Texture2D, @ptrCast(back_buffer)));
 
     var rtv: ?*anyopaque = null;
-    const rtv_hr = dx11.vtableOf(dx11.ID3D11DeviceVTable, device).CreateRenderTargetView(
-        device,
-        back_buffer.?,
-        null,
-        &rtv,
-    );
+    const rtv_hr = device.CreateRenderTargetView(back_buffer.?, null, &rtv);
     if (rtv_hr < 0 or rtv == null) {
         log.err("ID3D11Device::CreateRenderTargetView failed hr=0x{x}", .{@as(u32, @bitCast(rtv_hr))});
         return error.D3D11CreateRenderTargetViewFailed;
     }
 
-    return rtv.?;
+    return @ptrCast(rtv.?);
 }
 
 pub fn deinit(self: *DirectX11) void {
-    dx11.safeRelease(self.back_buffer_rtv);
-    dx11.safeRelease(self.swap_chain);
-    dx11.safeRelease(self.context);
-    dx11.safeRelease(self.device);
+    dx11.safeRelease(@as(?*dx11.ID3D11RenderTargetView, self.back_buffer_rtv));
+    dx11.safeRelease(@as(?*dx11.IDXGISwapChain, self.swap_chain));
+    dx11.safeRelease(@as(?*dx11.ID3D11DeviceContext, self.context));
+    dx11.safeRelease(@as(?*dx11.ID3D11Device, self.device));
     self.* = undefined;
 }
 
 pub fn drawFrameStart(self: *DirectX11) void {
-    const ctx = dx11.vtableOf(dx11.ID3D11DeviceContextVTable, self.context);
-
     const rtvs = [_]?*anyopaque{self.back_buffer_rtv};
-    ctx.OMSetRenderTargets(self.context, 1, &rtvs, null);
+    self.context.OMSetRenderTargets(1, &rtvs, null);
 
     // Cornflower blue -- the classic D3D "hello, clear color" value.
     const clear_color = [4]f32{ 0.392, 0.584, 0.929, 1.0 };
-    ctx.ClearRenderTargetView(self.context, self.back_buffer_rtv, &clear_color);
+    self.context.ClearRenderTargetView(self.back_buffer_rtv, &clear_color);
 }
 
 pub fn drawFrameEnd(self: *DirectX11) void {
@@ -183,11 +167,7 @@ pub fn present(self: *DirectX11, target: Target) !void {
 }
 
 pub fn presentLastTarget(self: *DirectX11) !void {
-    const hr = dx11.vtableOf(dx11.IDXGISwapChainVTable, self.swap_chain).Present(
-        self.swap_chain,
-        1,
-        0,
-    );
+    const hr = self.swap_chain.Present(1, 0);
     if (hr < 0) {
         log.err("IDXGISwapChain::Present failed hr=0x{x}", .{@as(u32, @bitCast(hr))});
         return error.D3D11PresentFailed;
@@ -259,8 +239,8 @@ pub const Target = struct {
 pub const Frame = struct {
     renderer: *Renderer,
     target: *Target,
-    context: *anyopaque,
-    target_rtv: *anyopaque,
+    context: *dx11.ID3D11DeviceContext,
+    target_rtv: *dx11.ID3D11RenderTargetView,
 
     pub const Options = struct {};
 
@@ -268,8 +248,8 @@ pub const Frame = struct {
         opts: Options,
         renderer: *Renderer,
         target: *Target,
-        context: *anyopaque,
-        target_rtv: *anyopaque,
+        context: *dx11.ID3D11DeviceContext,
+        target_rtv: *dx11.ID3D11RenderTargetView,
     ) !Frame {
         _ = opts;
         return .{ .renderer = renderer, .target = target, .context = context, .target_rtv = target_rtv };
@@ -296,8 +276,8 @@ pub const Frame = struct {
 pub const RenderPass = struct {
     attachments: []const Options.Attachment,
     step_number: usize = 0,
-    context: *anyopaque,
-    target_rtv: *anyopaque,
+    context: *dx11.ID3D11DeviceContext,
+    target_rtv: *dx11.ID3D11RenderTargetView,
 
     pub const Options = struct {
         attachments: []const Attachment,
@@ -326,41 +306,39 @@ pub const RenderPass = struct {
         };
     };
 
-    pub fn begin(opts: Options, context: *anyopaque, target_rtv: *anyopaque) RenderPass {
-        const ctx = dx11.vtableOf(dx11.ID3D11DeviceContextVTable, context);
+    pub fn begin(
+        opts: Options,
+        context: *dx11.ID3D11DeviceContext,
+        target_rtv: *dx11.ID3D11RenderTargetView,
+    ) RenderPass {
         const rtvs = [_]?*anyopaque{target_rtv};
-        ctx.OMSetRenderTargets(context, 1, &rtvs, null);
+        context.OMSetRenderTargets(1, &rtvs, null);
 
         if (opts.attachments.len > 0) {
             if (opts.attachments[0].clear_color) |c| {
-                ctx.ClearRenderTargetView(context, target_rtv, &c);
+                context.ClearRenderTargetView(target_rtv, &c);
             }
         }
-        
 
         return .{ .attachments = opts.attachments, .context = context, .target_rtv = target_rtv };
     }
 
     pub fn step(self: *RenderPass, s: Step) void {
         defer self.step_number += 1;
-        if (!s.pipeline.is_bg_color) return;
+        if (s.pipeline.is_bg_color) {
+            const raw = s.uniforms orelse return;
+            if (raw.data.len < @sizeOf(shaders.Uniforms)) return;
+            const uniforms: *const shaders.Uniforms = @ptrCast(@alignCast(raw.data.ptr));
+            const c = uniforms.bg_color;
+            const color = [4]f32{
+                @as(f32, @floatFromInt(c[0])) / 255.0,
+                @as(f32, @floatFromInt(c[1])) / 255.0,
+                @as(f32, @floatFromInt(c[2])) / 255.0,
+                @as(f32, @floatFromInt(c[3])) / 255.0,
+            };
 
-        const raw = s.uniforms orelse return;
-        if (raw.data.len < @sizeOf(shaders.Uniforms)) return;
-        const uniforms: *const shaders.Uniforms = @ptrCast(@alignCast(raw.data.ptr));
-        const c = uniforms.bg_color;
-        const color = [4]f32{
-            @as(f32, @floatFromInt(c[0])) / 255.0,
-            @as(f32, @floatFromInt(c[1])) / 255.0,
-            @as(f32, @floatFromInt(c[2])) / 255.0,
-            @as(f32, @floatFromInt(c[3])) / 255.0,
-        };
-
-        dx11.vtableOf(dx11.ID3D11DeviceContextVTable, self.context).ClearRenderTargetView(
-            self.context,
-            self.target_rtv,
-            &color,
-        );
+            self.context.ClearRenderTargetView(self.target_rtv, &color);
+        }
     }
 
     pub fn complete(self: *const RenderPass) void {
