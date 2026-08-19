@@ -167,14 +167,34 @@ pub fn performAction(
     return true;
 }
 
+fn pollEvents() void {
+    while (true) {
+        var msg: win32.MSG = std.mem.zeroes(win32.MSG);
+        if (win32.PeekMessageW(&msg, null, 0, 0, win32.PM_REMOVE) == 0) {
+            break;
+        }
+
+        _ = win32.TranslateMessage(&msg);
+        _ = win32.DispatchMessageW(&msg);
+    }
+}
+
 pub fn run(self: *App) !void {
     _ = win32.ShowWindow(self.hwnd, win32.SW_SHOWDEFAULT);
     _ = win32.UpdateWindow(self.hwnd);
 
-    var msg: win32.MSG = undefined;
-    while (win32.GetMessageW(&msg, null, 0, 0) > 0) {
-        _ = win32.TranslateMessage(&msg);
-        _ = win32.DispatchMessageW(&msg);
+    // Without this, sleeping on windows is very inaccurate.
+    _ = win32.timeBeginPeriod(1);
+
+    // var msg: win32.MSG = undefined;
+    // while (win32.GetMessageW(&msg, null, 0, 0) > 0) {
+    //     _ = win32.TranslateMessage(&msg);
+    //     _ = win32.DispatchMessageW(&msg);
+    // }
+
+    while (true) {
+        pollEvents();
+        win32.Sleep(1);
     }
 }
 

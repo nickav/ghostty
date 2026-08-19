@@ -197,6 +197,12 @@ fn win32SurfaceInit(surface: *apprt.Surface) !void {
         return error.Win32WglMakeCurrentFailed;
     }
 
+    const SwapIntervalFn = *const fn (interval: c_int) callconv(.winapi) win32gl.BOOL;
+    if (win32gl.wglGetProcAddress("wglSwapIntervalEXT")) |p| {
+        const swapInterval: SwapIntervalFn = @ptrCast(p);
+        _ = swapInterval(1);
+    }
+
     surface.app.gl_hdc = hdc;
     surface.app.gl_hglrc = hglrc;
 

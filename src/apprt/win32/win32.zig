@@ -36,6 +36,8 @@ pub const WS_OVERLAPPEDWINDOW: DWORD = 0x00CF0000;
 pub const WS_POPUP: DWORD = 0x80000000;
 pub const SW_SHOWDEFAULT: c_int = 10;
 
+pub const PM_REMOVE: u32 = 0x0001;
+
 pub const MONITOR_DEFAULTTOPRIMARY: DWORD = 0x00000001;
 pub const GWL_STYLE: c_int = -16;
 pub const HWND_TOP: ?HWND = @ptrFromInt(0);
@@ -247,6 +249,14 @@ pub extern "user32" fn GetMessageW(
     hwnd: ?HWND,
     msgFilterMin: UINT,
     msgFilterMax: UINT,
+) callconv(.winapi) BOOL;
+
+pub extern "user32" fn PeekMessageW(
+    lpMsg: *MSG,
+    hWnd: ?HWND,
+    wMsgFilterMin: u32,
+    wMsgFilterMax: u32,
+    wRemoveMsg: u32,
 ) callconv(.winapi) BOOL;
 
 pub extern "user32" fn TranslateMessage(msg: *const MSG) callconv(.winapi) BOOL;
@@ -543,3 +553,9 @@ pub inline fn wasKeyDown(lparam: LPARAM) bool {
 }
 
 pub extern "user32" fn MapVirtualKeyW(uCode: UINT, uMapType: UINT) callconv(.winapi) UINT;
+
+pub extern "kernel32" fn Sleep(dwMilliseconds: u32) callconv(.winapi) void;
+
+pub extern "winmm" fn timeBeginPeriod(uPeriod: u32) callconv(.winapi) u32;
+
+pub extern "winmm" fn timeEndPeriod(uPeriod: u32) callconv(.winapi) u32;

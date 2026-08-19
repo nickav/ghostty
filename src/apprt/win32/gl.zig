@@ -4,6 +4,7 @@ pub const HDC = win32.HANDLE;
 pub const HGLRC = win32.HANDLE;
 pub const WORD = u16;
 pub const BYTE = u8;
+pub const BOOL = c_int;
 
 pub const CS_OWNDC: win32.UINT = 0x0020;
 
