@@ -550,19 +550,27 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lpara
                 return 0;
             }
 
+            WCHAR units[2];
+            int unit_count;
             uint32_t codepoint;
             if (ch >= 0xDC00 && ch <= 0xDFFF && g_high_surrogate != 0) {
+                units[0] = g_high_surrogate;
+                units[1] = ch;
+                unit_count = 2;
                 codepoint = 0x10000 + (((uint32_t)g_high_surrogate - 0xD800) << 10) + ((uint32_t)ch - 0xDC00);
             } else {
+                units[0] = ch;
+                unit_count = 1;
                 codepoint = ch;
             }
+            
             g_high_surrogate = 0;
 
             if (codepoint == '\r') codepoint = '\n';
             if ((codepoint >= 32 && codepoint != 127) && codepoint != '\n')
             {
                 char utf8[4];
-                int len = WideCharToMultiByte(CP_UTF8, 0, &ch, 1, utf8, sizeof(utf8), NULL, NULL);
+                int len = WideCharToMultiByte(CP_UTF8, 0, units, unit_count, utf8, sizeof(utf8), NULL, NULL);
                 if (g_surface && len > 0)
                 {
                     ghostty_surface_text(g_surface, utf8, (uintptr_t)len);
