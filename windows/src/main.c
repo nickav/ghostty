@@ -8,6 +8,8 @@
 #define _UNICODE
 #include <windows.h>
 #include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 
 #define WM_WAKEUP (WM_APP + 1)
 
@@ -176,16 +178,14 @@ static ghostty_input_mods_e win32__get_keyboard_mods(void)
     return mods;
 }
 
-static void wakeup_cb(void *userdata) {
+static void win32__ghostty_wakeup(void *userdata)
+{
     HWND hwnd = (HWND)userdata;
     PostMessageW(hwnd, WM_WAKEUP, 0, 0);
 }
 
-static bool action_cb(
-    ghostty_app_t app,
-    ghostty_target_s target,
-    ghostty_action_s action
-) {
+static bool win32__ghostty_action(ghostty_app_t app, ghostty_target_s target, ghostty_action_s action)
+{
     (void)app;
 
     switch (action.tag)
@@ -206,29 +206,125 @@ static bool action_cb(
     }
 }
 
-static bool read_clipboard_cb(void *userdata, ghostty_clipboard_e clipboard, void *state)
+static bool win32__ghostty_read_clipboard(void *userdata, ghostty_clipboard_e clipboard, void *state)
 {
-    (void)userdata;
-    (void)clipboard;
-    (void)state;
-    return false;
+    if (clipboard != GHOSTTY_CLIPBOARD_STANDARD) {
+        // no primary selection on Windows
+        return false;
+    }
+
+    HWND hwnd = (HWND)userdata;
+    if (!OpenClipboard(hwnd)) {
+        return false;
+    }
+
+    HANDLE handle = GetClipboardData(CF_UNICODETEXT);
+    if (!handle) {
+        CloseClipboard();
+        return false;
+    }
+
+    WCHAR *wide = (WCHAR *)GlobalLock(handle);
+    if (!wide) {
+        CloseClipboard();
+        return false;
+    }
+
+    int utf8_len = WideCharToMultiByte(CP_UTF8, 0, wide, -1, NULL, 0, NULL, NULL);
+    bool ok = false;
+    if (utf8_len > 0) {
+        char *utf8 = (char *)malloc(utf8_len);
+        if (utf8) {
+            WideCharToMultiByte(CP_UTF8, 0, wide, -1, utf8, utf8_len, NULL, NULL);
+            ghostty_surface_complete_clipboard_request(g_surface, utf8, state, false);
+            free(utf8);
+            ok = true;
+        }
+    }
+
+    GlobalUnlock(handle);
+    CloseClipboard();
+    return ok;
 }
 
-static void confirm_read_clipboard_cb(void *userdata, const char *str, void *state, ghostty_clipboard_request_e request)
+static void win32__ghostty_confirm_read_clipboard(void *userdata, const char *str, void *state, ghostty_clipboard_request_e request)
 {
     (void)userdata;
-    (void)str;
-    (void)state;
-    (void)request;
+
+    const wchar_t *prompt = L"Allow the terminal to read the clipboard?";
+    switch (request)
+    {
+        case GHOSTTY_CLIPBOARD_REQUEST_PASTE:
+        {
+            prompt = L"Paste clipboard contents into the terminal?";
+        } break;
+        case GHOSTTY_CLIPBOARD_REQUEST_OSC_52_READ:
+        {
+            prompt = L"Allow the running program to read the clipboard (OSC 52)?";
+        } break;
+        case GHOSTTY_CLIPBOARD_REQUEST_OSC_52_WRITE:
+        {
+            prompt = L"Allow the running program to write the clipboard (OSC 52)?";
+        } break;
+    }
+
+    int result = MessageBoxW(NULL, prompt, L"Ghostty", MB_YESNO | MB_ICONQUESTION);
+    if (result == IDYES)
+    {
+        ghostty_surface_complete_clipboard_request(g_surface, str, state, true);
+    }
 }
 
-static void write_clipboard_cb(void *userdata, ghostty_clipboard_e clipboard, const ghostty_clipboard_content_s *content, size_t len, bool confirm)
+static void win32__ghostty_write_clipboard(void *userdata, ghostty_clipboard_e clipboard, const ghostty_clipboard_content_s *content, size_t len, bool confirm)
 {
-    (void)userdata;
-    (void)clipboard;
-    (void)content;
-    (void)len;
-    (void)confirm;
+    if (clipboard != GHOSTTY_CLIPBOARD_STANDARD) {
+        return;
+    }
+
+    const char *text = NULL;
+    for (size_t i = 0; i < len; i++) {
+        if (strcmp(content[i].mime, "text/plain") == 0) {
+            text = content[i].data;
+            break;
+        }
+    }
+    if (!text) {
+        return;
+    }
+
+    if (confirm) {
+        int result = MessageBoxW(NULL, L"Allow the running program to write the clipboard?", L"Ghostty", MB_YESNO | MB_ICONQUESTION);
+        if (result != IDYES) {
+            return;
+        }
+    }
+
+    int wide_len = MultiByteToWideChar(CP_UTF8, 0, text, -1, NULL, 0);
+    if (wide_len <= 0) {
+        return;
+    }
+
+    HANDLE handle = GlobalAlloc(GMEM_MOVEABLE, (SIZE_T)wide_len * sizeof(WCHAR));
+    if (!handle) {
+        return;
+    }
+
+    WCHAR *buffer = (WCHAR *)GlobalLock(handle);
+    if (!buffer) {
+        GlobalFree(handle);
+        return;
+    }
+    MultiByteToWideChar(CP_UTF8, 0, text, -1, buffer, wide_len);
+    GlobalUnlock(handle);
+
+    HWND hwnd = (HWND)userdata;
+    if (!OpenClipboard(hwnd)) {
+        GlobalFree(handle);
+        return;
+    }
+    EmptyClipboard();
+    SetClipboardData(CF_UNICODETEXT, handle); // clipboard now owns `handle`; do not free it
+    CloseClipboard();
 }
 
 static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
@@ -310,7 +406,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lpara
 
         case WM_GETMINMAXINFO:
         {
-            // NOTE(nick): set window minimum size
+            // NOTE(nick): set window size limits
             /*
             DWORD style = WS_OVERLAPPEDWINDOW;
             RECT wr = {0, 0, (LONG)game_width, (LONG)game_height};
@@ -319,8 +415,10 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lpara
             int height = (int)(wr.bottom - wr.top);
 
             MINMAXINFO *info = (MINMAXINFO *)lparam;
-            info->ptMinTrackSize.x = width;
-            info->ptMinTrackSize.y = height;
+            info->ptMinTrackSize.x = min_width;
+            info->ptMinTrackSize.y = min_height;
+            info->ptMaxTrackSize.x = max_width;
+            info->ptMaxTrackSize.y = max_height;
             return 0;
             */
         } break;
@@ -558,7 +656,11 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lpara
     return DefWindowProcW(hwnd, msg, wparam, lparam);
 }
 
-int main(int argc, char **argv) {
+int APIENTRY WinMain(HINSTANCE instance, HINSTANCE prev_inst, LPSTR cmd_line, int show)
+{
+    char **argv = __argv;
+    int argc = __argc;
+
     if (ghostty_init((uintptr_t)argc, argv) != 0) {
         fprintf(stderr, "ghostty_init failed\n");
         return 1;
@@ -653,11 +755,11 @@ int main(int argc, char **argv) {
     ghostty_runtime_config_s runtime_config;
     ZeroMemory(&runtime_config, sizeof(runtime_config));
     runtime_config.userdata = hwnd;
-    runtime_config.wakeup_cb = wakeup_cb;
-    runtime_config.action_cb = action_cb;
-    runtime_config.read_clipboard_cb = read_clipboard_cb;
-    runtime_config.confirm_read_clipboard_cb = confirm_read_clipboard_cb;
-    runtime_config.write_clipboard_cb = write_clipboard_cb;
+    runtime_config.wakeup_cb = win32__ghostty_wakeup;
+    runtime_config.action_cb = win32__ghostty_action;
+    runtime_config.read_clipboard_cb = win32__ghostty_read_clipboard;
+    runtime_config.confirm_read_clipboard_cb = win32__ghostty_confirm_read_clipboard;
+    runtime_config.write_clipboard_cb = win32__ghostty_write_clipboard;
 
     g_app = ghostty_app_new(&runtime_config, config);
     if (!g_app) {

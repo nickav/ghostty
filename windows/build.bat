@@ -4,7 +4,9 @@ set project_root=%~dp0%..
 pushd %project_root%
 
     rem Make sure libghostty is built
-    zig build -Dapp-runtime=none -Doptimize=ReleaseFast
+    if not exist .\zig-out\lib\ghostty-internal-static.lib (
+        zig build -Dapp-runtime=none -Doptimize=ReleaseFast
+    )
 
     rem Make sure the current session has the latest cl.exe
     for /f "usebackq tokens=*" %%i in (`"C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do set VSPATH=%%i
@@ -25,18 +27,20 @@ pushd %project_root%
 
     IF %errorlevel% NEQ 0 (popd && goto end)
 
+    rem @Incomplete: should we put this in zig-out or somewhere else?
+    rem At the moment, this is clobbering the actual target built on windows with zig:
+    rem zig build
     cl.exe /nologo /std:c11 /Iinclude ^
         windows\src\main.c ^
-        /link zig-out\lib\ghostty-internal-static.lib ^
-        zig-out\obj\ghostty.res ^
-        libcpmt.lib ^
+        /link ^
+        zig-out\lib\ghostty-internal-static.lib zig-out\obj\ghostty.res ^
         user32.lib gdi32.lib kernel32.lib advapi32.lib shell32.lib ole32.lib opengl32.lib ws2_32.lib mswsock.lib bcrypt.lib ntdll.lib ^
-        -OUT:zig-out\bin\ghostty-windows.exe
+        -subsystem:windows -incremental:no -opt:ref -OUT:zig-out\bin\ghostty.exe
 
     IF %errorlevel% NEQ 0 (popd && goto end)
 
     rem Run
-    .\zig-out\bin\ghostty-windows.exe
+    .\zig-out\bin\ghostty.exe
 
     :end
 popd
