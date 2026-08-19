@@ -60,6 +60,18 @@ static void win32__fatal_error(const char *message)
     ExitProcess(0);
 }
 
+static bool win32__show_confirm(const char *prompt)
+{
+    int result = MessageBoxA(NULL, prompt, "Ghostty", MB_YESNO | MB_ICONQUESTION);
+    return (result == IDYES);
+}
+
+static bool win32__show_confirm_warning(const char *prompt)
+{
+    int result = MessageBoxA(NULL, prompt, "Ghostty", MB_YESNO | MB_ICONWARNING);
+    return (result == IDYES);
+}
+
 static void win32__toggle_fullscreen(HWND hwnd)
 {
     static WINDOWPLACEMENT placement = {0};
@@ -251,25 +263,24 @@ static void win32__ghostty_confirm_read_clipboard(void *userdata, const char *st
 {
     (void)userdata;
 
-    const wchar_t *prompt = L"Allow the terminal to read the clipboard?";
+    const char *prompt = "Allow the terminal to read the clipboard?";
     switch (request)
     {
         case GHOSTTY_CLIPBOARD_REQUEST_PASTE:
         {
-            prompt = L"Paste clipboard contents into the terminal?";
+            prompt = "Paste clipboard contents into the terminal?";
         } break;
         case GHOSTTY_CLIPBOARD_REQUEST_OSC_52_READ:
         {
-            prompt = L"Allow the running program to read the clipboard (OSC 52)?";
+            prompt = "Allow the running program to read the clipboard (OSC 52)?";
         } break;
         case GHOSTTY_CLIPBOARD_REQUEST_OSC_52_WRITE:
         {
-            prompt = L"Allow the running program to write the clipboard (OSC 52)?";
+            prompt = "Allow the running program to write the clipboard (OSC 52)?";
         } break;
     }
 
-    int result = MessageBoxW(NULL, prompt, L"Ghostty", MB_YESNO | MB_ICONQUESTION);
-    if (result == IDYES)
+    if (win32__show_confirm(prompt))
     {
         ghostty_surface_complete_clipboard_request(g_surface, str, state, true);
     }
@@ -293,8 +304,8 @@ static void win32__ghostty_write_clipboard(void *userdata, ghostty_clipboard_e c
     }
 
     if (confirm) {
-        int result = MessageBoxW(NULL, L"Allow the running program to write the clipboard?", L"Ghostty", MB_YESNO | MB_ICONQUESTION);
-        if (result != IDYES) {
+        if (!win32__show_confirm("Allow Ghostty to write to the clipboard?"))
+        {
             return;
         }
     }
@@ -327,12 +338,40 @@ static void win32__ghostty_write_clipboard(void *userdata, ghostty_clipboard_e c
     CloseClipboard();
 }
 
+static void win32__ghostty_close_surface(void *userdata, bool process_alive)
+{
+    (void)process_alive;
+
+    HWND hwnd = (HWND)userdata;
+    if (!hwnd) {
+        return;
+    }
+
+    PostMessage(hwnd, WM_CLOSE, 0, 0);
+}
+
 static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
 {
     switch (msg) {
         case WM_CREATE:
         {
             win32__update_theme(hwnd);
+        } break;
+
+        case WM_CLOSE:
+        {
+            #if 0
+            if (g_surface && ghostty_surface_needs_confirm_quit(g_surface))
+            {
+                if (!win32__show_confirm_warning("The terminal still has a running process. If you close the terminal the process will be killed."))
+                {
+                    return 0;
+                }
+            }
+            #endif
+
+            DestroyWindow(hwnd);
+            return 0;
         } break;
 
         case WM_DESTROY:
@@ -507,10 +546,12 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lpara
             g_high_surrogate = 0;
 
             if (codepoint == '\r') codepoint = '\n';
-            if ((codepoint >= 32 && codepoint != 127) || codepoint == '\t' || codepoint == '\n') {
+            if ((codepoint >= 32 && codepoint != 127) && codepoint != '\n')
+            {
                 char utf8[4];
                 int len = WideCharToMultiByte(CP_UTF8, 0, &ch, 1, utf8, sizeof(utf8), NULL, NULL);
-                if (g_surface && len > 0) {
+                if (g_surface && len > 0)
+                {
                     ghostty_surface_text(g_surface, utf8, (uintptr_t)len);
                 }
             }
@@ -760,6 +801,7 @@ int APIENTRY WinMain(HINSTANCE instance, HINSTANCE prev_inst, LPSTR cmd_line, in
     runtime_config.read_clipboard_cb = win32__ghostty_read_clipboard;
     runtime_config.confirm_read_clipboard_cb = win32__ghostty_confirm_read_clipboard;
     runtime_config.write_clipboard_cb = win32__ghostty_write_clipboard;
+    runtime_config.close_surface_cb = win32__ghostty_close_surface;
 
     g_app = ghostty_app_new(&runtime_config, config);
     if (!g_app) {
