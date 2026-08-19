@@ -29,6 +29,9 @@ bg_brush: win32.HBRUSH,
 use_light_theme: win32.DWORD = 0,
 surface: ?*Surface,
 
+// @Incomplete: this is per-window state
+var g_placement: win32.WINDOWPLACEMENT = std.mem.zeroes(win32.WINDOWPLACEMENT);
+
 pub fn init(
     self: *App,
     core_app: *CoreApp,
@@ -139,7 +142,7 @@ pub fn performAction(
         },
 
         .initial_size => {
-            // @Robustness: this wil be called before App.init() is called??
+            // @Robustness: this will be called before App.init() is called??
             
             // :SurfaceShouldOwnTheHWND
             // var rect: win32.RECT = .{ .left = 0, .top = 0, .right = @intCast(value.width), .bottom = @intCast(value.height) };
@@ -241,6 +244,66 @@ fn wndProc(
             }
 
             return 0;
+        },
+        win32.WM_SYSCOMMAND => {
+            switch (wparam) {
+                // User trying to access application menu using ALT
+                win32.SC_KEYMENU => {
+                    // NOTE(nick): prevent beep sound when pressing alt key combo (e.g. alt + enter)
+                    return 0;
+                },
+                else => {},
+            }
+        },
+        win32.WM_KEYDOWN => {
+            const self: *App = @ptrFromInt(@as(usize, @bitCast(win32.GetWindowLongPtrW(hwnd, win32.GWLP_USERDATA))));
+
+            if (!win32.wasKeyDown(lparam) and win32.isKeyDown(lparam)) {
+                if (wparam == win32.VK_F11) {
+                    win32.toggleFullscreen(self.hwnd, &g_placement);
+                }
+            }
+
+            return win32.DefWindowProcW(hwnd, msg, wparam, lparam);
+        },
+        win32.WM_SYSKEYDOWN => {
+            const self: *App = @ptrFromInt(@as(usize, @bitCast(win32.GetWindowLongPtrW(hwnd, win32.GWLP_USERDATA))));
+
+            const was_down = win32.wasKeyDown(lparam);
+            const is_down = win32.isKeyDown(lparam);
+
+            if (!was_down and is_down) {
+                // @Incomplete: @Robustness: holding Enter down shouldn't continuously cycle the window...
+                if (win32.GetKeyState(win32.VK_MENU) < 0 and wparam == win32.VK_RETURN) {
+                    win32.toggleFullscreen(self.hwnd, &g_placement);
+                    return 0;
+                }
+            }
+
+            return win32.DefWindowProcW(hwnd, msg, wparam, lparam);
+        },
+        win32.WM_DPICHANGED => {
+            const suggested: *win32.RECT = @ptrFromInt(@as(usize, @bitCast(lparam)));
+            _ = win32.SetWindowPos(
+                hwnd,
+                win32.HWND_TOP,
+                suggested.left,
+                suggested.top,
+                suggested.right - suggested.left,
+                suggested.bottom - suggested.top,
+                win32.SWP_NOACTIVATE | win32.SWP_NOZORDER,
+            );
+        },
+        win32.WM_GETMINMAXINFO => {
+            // const info: *win32.MINMAXINFO = @ptrFromInt(@as(usize, @bitCast(lparam)));
+            // const style: win32.WINDOW_STYLE = win32.WS_OVERLAPPEDWINDOW;
+            // var wr: win32.RECT = .{ .left = 0, .top = 0, .right = @intCast(min_width), .bottom = @intCast(min_height) };
+            // _ = win32.AdjustWindowRect(&wr, style, win32.FALSE);
+            // const width: i32 = wr.right - wr.left;
+            // const height: i32 = wr.bottom - wr.top;
+            // info.ptMinTrackSize.x = width;
+            // info.ptMinTrackSize.y = height;
+            // return 0;
         },
         win32.WM_SETTINGCHANGE => {
             if (lparam != 0) {

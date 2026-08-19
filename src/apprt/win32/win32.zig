@@ -8,6 +8,7 @@ pub const UINT = windows.UINT;
 pub const LPCWSTR = windows.LPCWSTR;
 pub const LSTATUS = c_long;
 pub const BOOL = c_int;
+pub const LONG = i32;
 pub const WPARAM = usize;
 pub const LPARAM = isize;
 pub const LRESULT = isize;
@@ -26,12 +27,20 @@ pub const HICON = windows.HICON;
 pub const HCURSOR = windows.HCURSOR;
 pub const HBRUSH = windows.HBRUSH;
 pub const HMENU = windows.HMENU;
+pub const HMONITOR = *anyopaque;
 
 // Library-specific
 pub const CW_USEDEFAULT: c_int = @bitCast(@as(u32, 0x80000000));
 pub const WS_OVERLAPPEDWINDOW: DWORD = 0x00CF0000;
 pub const WS_POPUP: DWORD = 0x80000000;
 pub const SW_SHOWDEFAULT: c_int = 10;
+
+pub const MONITOR_DEFAULTTOPRIMARY: DWORD = 0x00000001;
+pub const GWL_STYLE: c_int = -16;
+pub const HWND_TOP: ?HWND = @ptrFromInt(0);
+pub const SWP_NOOWNERZORDER: UINT = 0x0200;
+pub const SWP_FRAMECHANGED: UINT = 0x0020;
+pub const SWP_NOSIZE: UINT = 0x0001;
 
 pub const WM_CREATE: UINT = 0x0001;
 pub const WM_DESTROY: UINT = 0x0002;
@@ -42,9 +51,30 @@ pub const WM_SETTINGCHANGE: UINT = 0x001A;
 pub const WM_DWMCOLORIZATIONCOLORCHANGED: UINT = 0x0320;
 pub const WM_APP: UINT = 0x8000;
 pub const WM_ERASEBKGND: UINT = 0x0014;
+pub const WM_SYSCOMMAND: UINT = 0x0112;
+pub const SC_KEYMENU: WPARAM = 0xF100;
+pub const WM_KEYDOWN: UINT = 0x0100;
+pub const WM_KEYUP: UINT = 0x0101;
+pub const WM_CHAR: UINT = 0x0102;
+pub const WM_SYSCHAR: UINT = 0x0106;
+pub const WM_UNICHAR: UINT = 0x0109;
+pub const UNICODE_NOCHAR: WPARAM = 0xFFFF;
+pub const WM_SYSKEYDOWN: UINT = 0x0104;
+pub const WM_SYSKEYUP: UINT = 0x0105;
+pub const WM_DPICHANGED: UINT = 0x02E0;
+pub const WM_GETMINMAXINFO: u32 = 0x0024;
+
+pub const VK_SHIFT: c_int = 0x10;
+pub const VK_MENU: c_int = 0x12;
+pub const VK_LWIN: c_int = 0x5B;
+pub const VK_RWIN: c_int = 0x5C;
+pub const VK_CONTROL: c_int = 0x11;
+pub const VK_RETURN: c_int = 0x0D;
+pub const VK_F11: c_int = 0x7A;
 
 pub const SWP_NOMOVE: UINT = 0x0002;
 pub const SWP_NOZORDER: UINT = 0x0004;
+pub const SWP_NOACTIVATE: UINT = 0x0010;
 
 pub const IDC_ARROW: ResourceNameW = @ptrFromInt(32512);
 
@@ -69,7 +99,7 @@ pub const BLACK_BRUSH: c_int = 4;
 pub const ResourceNameA = [*:0]align(1) const u8;
 pub const ResourceNameW = [*:0]align(1) const u16;
 
-// Compound-types
+// structs
 pub const RECT = extern struct {
     left: i32,
     top: i32,
@@ -112,6 +142,30 @@ pub const CREATESTRUCTW = extern struct {
     dwExStyle: DWORD,
 };
 
+pub const MONITORINFO = extern struct {
+    cbSize: DWORD = @sizeOf(MONITORINFO),
+    rcMonitor: RECT,
+    rcWork: RECT,
+    dwFlags: DWORD,
+};
+
+pub const WINDOWPLACEMENT = extern struct {
+    length: UINT = @sizeOf(WINDOWPLACEMENT),
+    flags: UINT,
+    showCmd: UINT,
+    ptMinPosition: POINT,
+    ptMaxPosition: POINT,
+    rcNormalPosition: RECT,
+};
+
+pub const MINMAXINFO = extern struct {
+    ptReserved: POINT,
+    ptMaxSize: POINT,
+    ptMaxPosition: POINT,
+    ptMinTrackSize: POINT,
+    ptMaxTrackSize: POINT,
+};
+
 // Basic Helpers
 pub fn makeIntResource(id: usize) ResourceNameW {
     return @ptrFromInt(id);
@@ -128,7 +182,7 @@ pub inline fn SUCCEEDED(hr: HRESULT) bool {
 }
 
 //
-// DLL bindings
+// Library functions
 //
 
 pub const WNDPROC = *const fn (
@@ -387,3 +441,100 @@ pub extern "user32" fn SetWindowPos(
     cy: c_int,
     uFlags: UINT,
 ) callconv(.winapi) BOOL;
+
+pub extern "user32" fn GetKeyState(
+    nVirtKey: c_int,
+) callconv(.winapi) i16;
+
+pub extern "user32" fn MonitorFromWindow(
+    hwnd: HWND,
+    dwFlags: DWORD,
+) callconv(.winapi) ?HMONITOR;
+
+pub extern "user32" fn GetMonitorInfoW(
+    hMonitor: HMONITOR,
+    lpmi: *MONITORINFO,
+) callconv(.winapi) BOOL;
+
+pub extern "user32" fn GetWindowRect(
+    hwnd: HWND,
+    lpRect: *RECT,
+) callconv(.winapi) BOOL;
+
+pub extern "user32" fn GetWindowLongW(
+    hwnd: HWND,
+    nIndex: c_int,
+) callconv(.winapi) LONG;
+
+pub extern "user32" fn SetWindowLongW(
+    hwnd: HWND,
+    nIndex: c_int,
+    dwNewLong: LONG,
+) callconv(.winapi) LONG;
+
+pub extern "user32" fn GetWindowPlacement(
+    hwnd: HWND,
+    lpwndpl: *WINDOWPLACEMENT,
+) callconv(.winapi) BOOL;
+
+pub extern "user32" fn SetWindowPlacement(
+    hwnd: HWND,
+    lpwndpl: *const WINDOWPLACEMENT,
+) callconv(.winapi) BOOL;
+
+pub fn toggleFullscreen(hwnd: HWND, placement: *WINDOWPLACEMENT) void {
+    var is_fullscreen = false;
+    {
+        var monitor_info: MONITORINFO = std.mem.zeroes(MONITORINFO);
+        monitor_info.cbSize = @sizeOf(MONITORINFO);
+        _ = GetMonitorInfoW(MonitorFromWindow(hwnd, MONITOR_DEFAULTTOPRIMARY).?, &monitor_info);
+
+        var rect: RECT = undefined;
+        _ = GetWindowRect(hwnd, &rect);
+
+        is_fullscreen = rect.left == monitor_info.rcMonitor.left and
+            rect.right == monitor_info.rcMonitor.right and
+            rect.top == monitor_info.rcMonitor.top and
+            rect.bottom == monitor_info.rcMonitor.bottom;
+    }
+
+    const style = GetWindowLongW(hwnd, GWL_STYLE);
+
+    if (!is_fullscreen) {
+        var monitor_info: MONITORINFO = std.mem.zeroes(MONITORINFO);
+        monitor_info.cbSize = @sizeOf(MONITORINFO);
+
+        if (GetWindowPlacement(hwnd, placement) != 0 and
+            GetMonitorInfoW(MonitorFromWindow(hwnd, MONITOR_DEFAULTTOPRIMARY).?, &monitor_info) != 0)
+        {
+            _ = SetWindowLongW(hwnd, GWL_STYLE, style & ~@as(LONG, @bitCast(WS_OVERLAPPEDWINDOW)));
+
+            _ = SetWindowPos(
+                hwnd,
+                HWND_TOP,
+                monitor_info.rcMonitor.left,
+                monitor_info.rcMonitor.top,
+                monitor_info.rcMonitor.right - monitor_info.rcMonitor.left,
+                monitor_info.rcMonitor.bottom - monitor_info.rcMonitor.top,
+                SWP_NOOWNERZORDER | SWP_FRAMECHANGED,
+            );
+        }
+    } else {
+        _ = SetWindowLongW(hwnd, GWL_STYLE, style | @as(LONG, @bitCast(WS_OVERLAPPEDWINDOW)));
+        _ = SetWindowPlacement(hwnd, placement);
+        const flags = SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOOWNERZORDER | SWP_FRAMECHANGED;
+        _ = SetWindowPos(hwnd, null, 0, 0, 0, 0, flags);
+    }
+}
+
+pub inline fn isKeyRepeat(lparam: LPARAM) bool {
+    return (@as(usize, @bitCast(lparam)) & (1 << 30)) != 0;
+}
+
+pub inline fn isKeyDown(lparam: LPARAM) bool {
+    return (@as(usize, @bitCast(lparam)) & (1 << 31)) == 0;
+}
+
+pub inline fn wasKeyDown(lparam: LPARAM) bool {
+    return (@as(usize, @bitCast(lparam)) & (1 << 30)) != 0;
+}
