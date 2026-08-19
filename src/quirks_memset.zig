@@ -64,17 +64,13 @@ comptime {
     //      scalar operations are going to be just as good.
     //   2. The C object format target uses strong linkage which
     //      conflits with ours and errors.
-    //   3. COFF builds (MSVC) always link against the CRT, which
-    //      already provides memset, so we don't need this there. Weak
-    //      linkage would still conflict (MSVC's linker errors when
-    //      two identical linked symbols exist) and strong linkage
-    //      (e.g. a dynamic Lib) duplicate-symbol errors against
-    //      libvcruntime's memset, so we skip the override for every
-    //      COFF build regardless of linkage.
+    //   3. Weak COFF builds fatally error because MSVC's linker
+    //      errors when two identical linked symbols exist. MSVC has
+    //      CRT which links so we don't need this there anyways.
     const enabled =
         std.simd.suggestVectorLength(u8) != null and
         builtin.object_format != .c and
-        builtin.object_format != .coff;
+        !(linkage == .weak and builtin.object_format == .coff);
 
     if (enabled) @export(&memset, .{
         .name = "memset",

@@ -169,65 +169,6 @@ fn prepareContext(getProcAddress: anytype) !void {
     try gl.enable(gl.c.GL_FRAMEBUFFER_SRGB);
 }
 
-// @Incomplete: this should be done with a proper win32 dummy GL context
-fn win32SurfaceInit(surface: *apprt.Surface) !void {
-    const win32gl = @import("../apprt/win32/gl.zig");
-
-    const hwnd = surface.app.hwnd;
-    const hdc = win32gl.GetDC(hwnd) orelse return error.Win32GetDCFailed;
-    errdefer _ = win32gl.ReleaseDC(hwnd, hdc);
-
-    var pfd: win32gl.PIXELFORMATDESCRIPTOR = .{
-        .dwFlags = win32gl.PFD_DRAW_TO_WINDOW | win32gl.PFD_SUPPORT_OPENGL | win32gl.PFD_DOUBLEBUFFER,
-        .iPixelType = win32gl.PFD_TYPE_RGBA,
-        .cColorBits = 32,
-        .cDepthBits = 24,
-        .cStencilBits = 8,
-        .iLayerType = win32gl.PFD_MAIN_PLANE,
-    };
-
-    const format = win32gl.ChoosePixelFormat(hdc, &pfd);
-    if (format == 0) return error.Win32ChoosePixelFormatFailed;
-    if (win32gl.SetPixelFormat(hdc, format, &pfd) == 0) {
-        return error.Win32SetPixelFormatFailed;
-    }
-
-    const hglrc = win32gl.wglCreateContext(hdc) orelse return error.Win32WglCreateContextFailed;
-    errdefer _ = win32gl.wglDeleteContext(hglrc);
-    if (win32gl.wglMakeCurrent(hdc, hglrc) == 0) {
-        return error.Win32WglMakeCurrentFailed;
-    }
-
-    const SwapIntervalFn = *const fn (interval: c_int) callconv(.winapi) win32gl.BOOL;
-    if (win32gl.wglGetProcAddress("wglSwapIntervalEXT")) |p| {
-        const swapInterval: SwapIntervalFn = @ptrCast(p);
-        _ = swapInterval(1);
-    }
-
-    surface.app.gl_hdc = hdc;
-    surface.app.gl_hglrc = hglrc;
-
-    try prepareContext(&win32GetProcAddress);
-}
-
-var win32_opengl32_module: ?*anyopaque = null;
-
-fn win32GetProcAddress(name: [*:0]const u8) callconv(.c) ?*const fn () callconv(.c) void {
-    const win32 = @import("../apprt/win32/win32.zig");
-    const win32gl = @import("../apprt/win32/gl.zig");
-
-    if (win32gl.wglGetProcAddress(name)) |p| return @ptrCast(p);
-
-    if (win32_opengl32_module == null) {
-        win32_opengl32_module = @ptrCast(win32.LoadLibraryA("opengl32.dll"));
-    }
-    if (win32_opengl32_module) |mod| {
-        if (win32.GetProcAddress(@ptrCast(mod), name)) |p| return @ptrCast(p);
-    }
-
-    return null;
-}
-
 pub fn surfaceInit(surface: *apprt.Surface) !void {
     switch (apprt.runtime) {
         else => @compileError("unsupported app runtime for OpenGL"),
@@ -242,7 +183,13 @@ pub fn surfaceInit(surface: *apprt.Surface) !void {
             // broken for rendering on this platforms.
         },
 
-        apprt.win32 => try win32SurfaceInit(surface),
+        apprt.win32 => {
+            const win32gl = @import("../apprt/win32/gl.zig");
+            const ctx = try win32gl.init(surface.app.hwnd, MIN_VERSION_MAJOR, MIN_VERSION_MINOR);
+            surface.app.gl_hdc = ctx.hdc;
+            surface.app.gl_hglrc = ctx.hglrc;
+            try prepareContext(&win32gl.getProcAddress);
+        },
     }
 
     // These are very noisy so this is commented, but easy to uncomment
