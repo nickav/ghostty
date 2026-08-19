@@ -45,14 +45,24 @@ blending: configpkg.Config.AlphaBlending,
 /// The most recently presented target, in case we need to present it again.
 last_target: ?Target = null,
 
+/// HDC used for SwapBuffers on win32. Always null on other apprts.
+win32_hdc: ?*anyopaque = null,
+
 /// NOTE: This is an error{}!OpenGL instead of just OpenGL for parity with
 ///       Metal, since it needs to be fallible so does this, even though it
 ///       can't actually fail.
 pub fn init(alloc: Allocator, opts: rendererpkg.Options) error{}!OpenGL {
-    return .{
+    var self: OpenGL = .{
         .alloc = alloc,
         .blending = opts.config.blending,
     };
+
+    switch (apprt.runtime) {
+        apprt.win32 => self.win32_hdc = opts.rt_surface.app.gl_hdc.?,
+        else => {},
+    }
+
+    return self;
 }
 
 pub fn deinit(self: *OpenGL) void {
@@ -158,10 +168,63 @@ fn prepareContext(getProcAddress: anytype) !void {
     try gl.enable(gl.c.GL_FRAMEBUFFER_SRGB);
 }
 
-/// This is called early right after surface creation.
-pub fn surfaceInit(surface: *apprt.Surface) !void {
-    _ = surface;
+// @Incomplete: this should be done with a proper win32 dummy GL context
+fn win32SurfaceInit(surface: *apprt.Surface) !void {
+    const win32gl = @import("../apprt/win32/gl.zig");
 
+    const hwnd = surface.app.hwnd;
+    const hdc = win32gl.GetDC(hwnd) orelse return error.Win32GetDCFailed;
+    errdefer _ = win32gl.ReleaseDC(hwnd, hdc);
+
+    var pfd: win32gl.PIXELFORMATDESCRIPTOR = .{
+        .dwFlags = win32gl.PFD_DRAW_TO_WINDOW |
+            win32gl.PFD_SUPPORT_OPENGL |
+            win32gl.PFD_DOUBLEBUFFER,
+        .iPixelType = win32gl.PFD_TYPE_RGBA,
+        .cColorBits = 32,
+        .cDepthBits = 24,
+        .cStencilBits = 8,
+        .iLayerType = win32gl.PFD_MAIN_PLANE,
+    };
+
+    const format = win32gl.ChoosePixelFormat(hdc, &pfd);
+    if (format == 0) return error.Win32ChoosePixelFormatFailed;
+    if (win32gl.SetPixelFormat(hdc, format, &pfd) == 0) {
+        return error.Win32SetPixelFormatFailed;
+    }
+
+    const hglrc = win32gl.wglCreateContext(hdc) orelse
+        return error.Win32WglCreateContextFailed;
+    errdefer _ = win32gl.wglDeleteContext(hglrc);
+    if (win32gl.wglMakeCurrent(hdc, hglrc) == 0) {
+        return error.Win32WglMakeCurrentFailed;
+    }
+
+    surface.app.gl_hdc = hdc;
+    surface.app.gl_hglrc = hglrc;
+
+    try prepareContext(&win32GetProcAddress);
+}
+
+var win32_opengl32_module: ?*anyopaque = null;
+
+fn win32GetProcAddress(name: [*:0]const u8) callconv(.c) ?*const fn () callconv(.c) void {
+    const win32 = @import("../apprt/win32/win32.zig");
+    const win32gl = @import("../apprt/win32/gl.zig");
+
+    if (win32gl.wglGetProcAddress(name)) |p| return @ptrCast(p);
+
+    if (win32_opengl32_module == null) {
+        win32_opengl32_module = @ptrCast(win32.LoadLibraryA("opengl32.dll"));
+    }
+    if (win32_opengl32_module) |mod| {
+        if (win32.GetProcAddress(@ptrCast(mod), name)) |p| return @ptrCast(p);
+    }
+
+    return null;
+}
+
+pub fn surfaceInit(surface: *apprt.Surface) !void {
     switch (apprt.runtime) {
         else => @compileError("unsupported app runtime for OpenGL"),
 
@@ -174,6 +237,8 @@ pub fn surfaceInit(surface: *apprt.Surface) !void {
             // to compile for OpenGL targets but libghostty is strictly
             // broken for rendering on this platforms.
         },
+
+        apprt.win32 => try win32SurfaceInit(surface),
     }
 
     // These are very noisy so this is commented, but easy to uncomment
@@ -208,6 +273,8 @@ pub fn threadEnter(self: *const OpenGL, surface: *apprt.Surface) !void {
             // on the main thread. As such, we don't do anything here.
         },
 
+        apprt.win32 => {},
+
         apprt.embedded => {
             // TODO(mitchellh): this does nothing today to allow libghostty
             // to compile for OpenGL targets but libghostty is strictly
@@ -226,6 +293,9 @@ pub fn threadExit(self: *const OpenGL) void {
         apprt.gtk => {
             // We don't need to do any unloading for GTK because we may
             // be sharing the global bindings with other windows.
+        },
+        
+        apprt.win32 => {
         },
 
         apprt.embedded => {
@@ -286,6 +356,15 @@ pub fn surfaceSize(self: *const OpenGL) !struct { width: u32, height: u32 } {
     };
 }
 
+/// Called by the win32 apprt on WM_SIZE.
+pub fn resizeViewport(self: *const OpenGL, width: u32, height: u32) void {
+    _ = self;
+    switch (apprt.runtime) {
+        apprt.win32 => gl.glad.context.Viewport.?(0, 0, @intCast(width), @intCast(height)),
+        else => {},
+    }
+}
+
 /// Initialize a new render target which can be presented by this API.
 pub fn initTarget(self: *const OpenGL, width: usize, height: usize) !Target {
     return Target.init(.{
@@ -328,6 +407,15 @@ pub fn present(self: *OpenGL, target: Target) !void {
 
     // Keep track of this target in case we need to repeat it.
     self.last_target = target;
+
+    switch (apprt.runtime) {
+        apprt.win32 => {
+            const win32gl = @import("../apprt/win32/gl.zig");
+            const hdc: win32gl.HDC = @ptrCast(self.win32_hdc.?);
+            if (win32gl.SwapBuffers(hdc) == 0) return error.Win32SwapBuffersFailed;
+        },
+        else => {},
+    }
 }
 
 /// Present the last presented target again.

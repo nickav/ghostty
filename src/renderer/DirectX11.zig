@@ -37,7 +37,7 @@ width: u32,
 height: u32,
 
 pub fn init(alloc: Allocator, opts: rendererpkg.Options) !DirectX11 {
-    const hwnd: *anyopaque = switch (apprt.runtime) {
+    const hwnd: dx11.HWND = switch (apprt.runtime) {
         apprt.win32 => @ptrCast(opts.rt_surface.app.hwnd),
         else => @compileError("DirectX11 only supports the win32 apprt"),
     };
@@ -97,26 +97,35 @@ pub fn init(alloc: Allocator, opts: rendererpkg.Options) !DirectX11 {
     };
 }
 
+pub fn resizeSwapChain(self: *DirectX11, width: u32, height: u32) !void {
+    dx11.safeRelease(@as(?*dx11.ID3D11RenderTargetView, self.back_buffer_rtv));
+    const hr = self.swap_chain.ResizeBuffers(0, width, height, 0, 0);
+    if (hr < 0) return error.D3D11ResizeBuffersFailed;
+    self.back_buffer_rtv = try createBackBufferRtv(self.device, self.swap_chain);
+    self.width = width;
+    self.height = height;
+}
+
 fn createBackBufferRtv(
     device: *dx11.ID3D11Device,
     swap_chain: *dx11.IDXGISwapChain,
 ) !*dx11.ID3D11RenderTargetView {
-    var back_buffer: ?*anyopaque = null;
+    var back_buffer: ?*dx11.ID3D11Texture2D = null;
     const gb_hr = swap_chain.GetBuffer(0, &dx11.IID_ID3D11Texture2D, &back_buffer);
     if (gb_hr < 0 or back_buffer == null) {
         log.err("IDXGISwapChain::GetBuffer failed hr=0x{x}", .{@as(u32, @bitCast(gb_hr))});
         return error.D3D11GetBufferFailed;
     }
-    defer dx11.safeRelease(@as(?*dx11.ID3D11Texture2D, @ptrCast(back_buffer)));
+    defer dx11.safeRelease(back_buffer);
 
-    var rtv: ?*anyopaque = null;
+    var rtv: ?*dx11.ID3D11RenderTargetView = null;
     const rtv_hr = device.CreateRenderTargetView(back_buffer.?, null, &rtv);
     if (rtv_hr < 0 or rtv == null) {
         log.err("ID3D11Device::CreateRenderTargetView failed hr=0x{x}", .{@as(u32, @bitCast(rtv_hr))});
         return error.D3D11CreateRenderTargetViewFailed;
     }
 
-    return @ptrCast(rtv.?);
+    return rtv.?;
 }
 
 pub fn deinit(self: *DirectX11) void {
@@ -128,7 +137,7 @@ pub fn deinit(self: *DirectX11) void {
 }
 
 pub fn drawFrameStart(self: *DirectX11) void {
-    const rtvs = [_]?*anyopaque{self.back_buffer_rtv};
+    const rtvs = [_]?*dx11.ID3D11RenderTargetView{self.back_buffer_rtv};
     self.context.OMSetRenderTargets(1, &rtvs, null);
 
     // Cornflower blue -- the classic D3D "hello, clear color" value.
@@ -311,7 +320,7 @@ pub const RenderPass = struct {
         context: *dx11.ID3D11DeviceContext,
         target_rtv: *dx11.ID3D11RenderTargetView,
     ) RenderPass {
-        const rtvs = [_]?*anyopaque{target_rtv};
+        const rtvs = [_]?*dx11.ID3D11RenderTargetView{target_rtv};
         context.OMSetRenderTargets(1, &rtvs, null);
 
         if (opts.attachments.len > 0) {

@@ -551,6 +551,12 @@ pub fn add(
         step.root_module.linkSystemLibrary("dxgi", .{});
     }
 
+    if (step.rootModuleTarget().os.tag == .windows and
+        self.config.renderer == .opengl)
+    {
+        step.root_module.linkSystemLibrary("opengl32", .{});
+    }
+
     // Mac Stuff
     if (step.rootModuleTarget().os.tag.isDarwin()) {
         if (b.lazyDependency("zig_objc", .{

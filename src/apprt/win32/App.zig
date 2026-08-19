@@ -10,6 +10,7 @@ const configpkg = @import("../../config.zig");
 const Config = configpkg.Config;
 
 const win32 = @import("./win32.zig");
+const gl = @import("./gl.zig");
 const Surface = @import("Surface.zig");
 
 const log = std.log.scoped(.win32);
@@ -28,6 +29,9 @@ hwnd: win32.HWND,
 bg_brush: win32.HBRUSH,
 use_light_theme: win32.DWORD = 0,
 surface: ?*Surface,
+
+gl_hdc: ?gl.HDC = null,
+gl_hglrc: ?gl.HGLRC = null,
 
 // @Incomplete: this is per-window state
 var g_placement: win32.WINDOWPLACEMENT = std.mem.zeroes(win32.WINDOWPLACEMENT);
@@ -79,6 +83,7 @@ pub fn init(
     }
 
     const wc: win32.WNDCLASSEXW = .{
+        .style = gl.CS_OWNDC,
         .lpfnWndProc = &wndProc,
         .hInstance = hinstance,
         .hIcon = icon,
@@ -231,10 +236,14 @@ fn wndProc(
                 var rect: win32.RECT = undefined;
                 _ = win32.GetClientRect(hwnd, &rect);
 
-                surface.core().sizeCallback(.{
-                    .width = @intCast(rect.right - rect.left),
-                    .height = @intCast(rect.bottom - rect.top),
-                }) catch |err| {
+                const width: u32 = @intCast(rect.right - rect.left);
+                const height: u32 = @intCast(rect.bottom - rect.top);
+
+                if (@hasDecl(@TypeOf(surface.core().renderer.api), "resizeViewport")) {
+                    surface.core().renderer.api.resizeViewport(width, height);
+                }
+
+                surface.core().sizeCallback(.{ .width = width, .height = height }) catch |err| {
                     log.warn("error handling resize err={}", .{err});
                 };
 
