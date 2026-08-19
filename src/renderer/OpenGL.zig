@@ -46,8 +46,11 @@ blending: configpkg.Config.AlphaBlending,
 /// The most recently presented target, in case we need to present it again.
 last_target: ?Target = null,
 
-/// HDC used for SwapBuffers on win32. Always null on other apprts.
+/// HDC used for SwapBuffers on win32. 
 win32_hdc: ?*anyopaque = null,
+
+/// HGLRC for the win32 GL context.
+win32_hglrc: ?*anyopaque = null,
 
 /// NOTE: This is an error{}!OpenGL instead of just OpenGL for parity with
 ///       Metal, since it needs to be fallible so does this, even though it
@@ -60,6 +63,10 @@ pub fn init(alloc: Allocator, opts: rendererpkg.Options) error{}!OpenGL {
 
     switch (apprt.runtime) {
         apprt.win32 => self.win32_hdc = opts.rt_surface.app.gl_hdc.?,
+        apprt.embedded => if (builtin.target.os.tag == .windows) {
+            self.win32_hdc = opts.rt_surface.win32_hdc.?;
+            self.win32_hglrc = opts.rt_surface.win32_hglrc.?;
+        },
         else => {},
     }
 
@@ -177,7 +184,17 @@ pub fn surfaceInit(surface: *apprt.Surface) !void {
         apprt.gtk,
         => try prepareContext(null),
 
-        apprt.embedded => {
+        apprt.embedded => if (builtin.target.os.tag == .windows) {
+            const win32gl = @import("../apprt/win32/gl.zig");
+            const ctx = try win32gl.init(
+                @ptrCast(surface.platform.windows.hwnd),
+                MIN_VERSION_MAJOR,
+                MIN_VERSION_MINOR,
+            );
+            surface.win32_hdc = ctx.hdc;
+            surface.win32_hglrc = ctx.hglrc;
+            try prepareContext(&win32gl.getProcAddress);
+        } else {
             // TODO(mitchellh): this does nothing today to allow libghostty
             // to compile for OpenGL targets but libghostty is strictly
             // broken for rendering on this platforms.
@@ -365,6 +382,11 @@ pub fn present(self: *OpenGL, target: Target) !void {
             const hdc: win32gl.HDC = @ptrCast(self.win32_hdc.?);
             if (win32gl.SwapBuffers(hdc) == 0) return error.Win32SwapBuffersFailed;
             std.log.warn("[TIMING] SwapBuffers t={d}ms", .{@divTrunc(std.Io.Timestamp.now(global.io(), .awake).nanoseconds, std.time.ns_per_ms)});
+        },
+        apprt.embedded => if (builtin.target.os.tag == .windows) {
+            const win32gl = @import("../apprt/win32/gl.zig");
+            const hdc: win32gl.HDC = @ptrCast(self.win32_hdc.?);
+            if (win32gl.SwapBuffers(hdc) == 0) return error.Win32SwapBuffersFailed;
         },
         else => {},
     }

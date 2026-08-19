@@ -218,6 +218,55 @@ pub fn build(b: *std.Build) !void {
                 lib_static.install("ghostty-internal.a");
             }
         }
+
+        // A minimal native Win32 host that uses the embedded library the same way that the macOS app does.
+        // This is extremely alpha!
+        if (config.target.result.os.tag == .windows) {
+            const windows_exe = b.addExecutable(.{
+                .name = "ghostty-windows",
+                .root_module = b.createModule(.{
+                    .target = config.target,
+                    .optimize = config.optimize,
+                    .link_libc = true,
+                    .omit_frame_pointer = false,
+                    .unwind_tables = .sync,
+                }),
+            });
+            windows_exe.root_module.addCSourceFile(.{
+                .file = b.path("windows/main.c"),
+                .flags = &.{"-std=c11"},
+            });
+            windows_exe.root_module.addIncludePath(b.path("include"));
+            windows_exe.root_module.addObjectFile(lib_static.output);
+            windows_exe.root_module.addWin32ResourceFile(.{
+                .file = b.path("dist/windows/ghostty.rc"),
+            });
+            windows_exe.root_module.linkSystemLibrary("user32", .{});
+            windows_exe.root_module.linkSystemLibrary("gdi32", .{});
+            windows_exe.root_module.linkSystemLibrary("kernel32", .{});
+            windows_exe.root_module.linkSystemLibrary("advapi32", .{});
+            windows_exe.root_module.linkSystemLibrary("shell32", .{});
+            windows_exe.root_module.linkSystemLibrary("ole32", .{});
+            windows_exe.root_module.linkSystemLibrary("opengl32", .{});
+            windows_exe.root_module.linkSystemLibrary("ws2_32", .{});
+            windows_exe.root_module.linkSystemLibrary("mswsock", .{});
+            windows_exe.root_module.linkSystemLibrary("bcrypt", .{});
+
+            const install_windows_exe = b.addInstallArtifact(windows_exe, .{});
+            const windows_step = b.step(
+                "windows",
+                "Build the minimal Win32 libghostty host (windows/main.c)",
+            );
+            windows_step.dependOn(&install_windows_exe.step);
+
+            const run_windows_exe = b.addRunArtifact(windows_exe);
+            run_windows_exe.step.dependOn(&install_windows_exe.step);
+            const run_windows_step = b.step(
+                "run-windows",
+                "Run the minimal Win32 libghostty host",
+            );
+            run_windows_step.dependOn(&run_windows_exe.step);
+        }
     }
 
     // macOS only artifacts. These will error if they're initialized for

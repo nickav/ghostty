@@ -73,7 +73,7 @@ pub fn init(opts: InitOpts) !void {
             // WTF-16 string) so that it can just be passed into
             // std.process.Args.Vector directly.
             .c => |c| .{ .vector = if (builtin.os.tag == .windows)
-                return error.UnsupportedOSForCApi
+                &[_]u16{}
             else
                 c.argv[0..c.argc] },
         },
