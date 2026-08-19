@@ -233,7 +233,7 @@ pub fn build(b: *std.Build) !void {
                 }),
             });
             windows_exe.root_module.addCSourceFile(.{
-                .file = b.path("windows/main.c"),
+                .file = b.path("windows/src/main.c"),
                 .flags = &.{"-std=c11"},
             });
             windows_exe.root_module.addIncludePath(b.path("include"));

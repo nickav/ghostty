@@ -1,6 +1,11 @@
 #define GHOSTTY_STATIC
 #include "ghostty.h"
 
+#define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
+#define VC_EXTRALEAN
+#define UNICODE
+#define _UNICODE
 #include <windows.h>
 #include <stdio.h>
 
@@ -505,6 +510,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lpara
             double mouse_y = GET_Y_LPARAM(lparam) / scale;
             if (g_surface)
             {
+                // @Incomplete: @Robustness: should we be clamping mouse_x and mouse_y to the window size?
                 ghostty_surface_mouse_pos(g_surface, mouse_x, mouse_y, win32__get_keyboard_mods());
             }
         } break;
