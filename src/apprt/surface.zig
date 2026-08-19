@@ -160,8 +160,10 @@ pub const Message = union(enum) {
                 ChildExited,
                 .{ .name = "GhosttyApprtChildExited" },
             ),
+            
+            .win32 => void,
 
-            .none, .win32 => void,
+            .none,
         };
     };
 };

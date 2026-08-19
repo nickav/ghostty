@@ -84,9 +84,8 @@ pub fn initTerminal(self: *Exec, term: *terminal.Terminal) void {
 }
 
 /// Closes one end of the read thread's quit-signal pipe returned by
-/// `internal_os.pipe`. On Windows this is a raw HANDLE from
-/// `CreatePipe`, which must be closed with `CloseHandle` rather than
-/// the POSIX `close` used everywhere else.
+/// `internal_os.pipe`. On Windows this is a HANDLE from `CreatePipe`,
+/// which must be closed with `CloseHandle` rather than POSIX `close`.
 fn closeReadThreadPipeEnd(fd: posix.fd_t) void {
     if (comptime builtin.os.tag == .windows) {
         _ = windows.exp.kernel32.CloseHandle(fd);
@@ -216,9 +215,7 @@ pub fn threadExit(self: *Exec, td: *termio.Termio.ThreadData) void {
     // we don't get stuck waiting for data to stop flowing if it is
     // a particularly noisy process.
     if (comptime builtin.os.tag == .windows) {
-        // exec.read_thread_pipe is a raw HANDLE on Windows, not a
-        // CRT fd, so it must be written with WriteFile rather than
-        // the POSIX write() used below.
+        // exec.read_thread_pipe is a HANDLE on Windows, not a CRT fd
         if (windows.exp.kernel32.WriteFile(
             exec.read_thread_pipe,
             "x",
@@ -227,9 +224,7 @@ pub fn threadExit(self: *Exec, td: *termio.Termio.ThreadData) void {
             null,
         ) == windows.FALSE) {
             switch (windows.GetLastError()) {
-                // Our read thread's end is closed already, which is
-                // completely fine since that is what we were trying
-                // to achieve.
+                // Our read thread's end is closed already, which is fine
                 .BROKEN_PIPE, .NO_DATA => {},
 
                 else => |err| log.warn(
@@ -1810,9 +1805,7 @@ pub const ReadThread = struct {
     }
 
     fn threadMainWindows(fd: posix.fd_t, io: *termio.Termio, quit: posix.fd_t) void {
-        // Always close our end of the pipe when we exit. `quit` is a
-        // raw HANDLE from CreatePipe, not a CRT fd, so it must be
-        // closed with CloseHandle rather than POSIX close().
+        // Always close our end of the pipe when we exit.
         defer _ = windows.exp.kernel32.CloseHandle(quit);
 
         // Setup our crash metadata

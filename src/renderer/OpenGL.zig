@@ -2,6 +2,7 @@
 pub const OpenGL = @This();
 
 const std = @import("std");
+const global = @import("../global.zig");
 const Allocator = std.mem.Allocator;
 const builtin = @import("builtin");
 const gl = @import("opengl");
@@ -416,6 +417,7 @@ pub fn present(self: *OpenGL, target: Target) !void {
             const win32gl = @import("../apprt/win32/gl.zig");
             const hdc: win32gl.HDC = @ptrCast(self.win32_hdc.?);
             if (win32gl.SwapBuffers(hdc) == 0) return error.Win32SwapBuffersFailed;
+            std.log.warn("[TIMING] SwapBuffers t={d}ms", .{@divTrunc(std.Io.Timestamp.now(global.io(), .awake).nanoseconds, std.time.ns_per_ms)});
         },
         else => {},
     }
