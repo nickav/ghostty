@@ -30,6 +30,22 @@ static Win32_DwmSetWindowAttribute *DwmSetWindowAttribute = NULL;
 #define DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 ((HANDLE) -4)
 #endif
 
+#ifndef GET_X_LPARAM
+#define GET_X_LPARAM(lp) ((int)(short)LOWORD(lp))
+#endif
+
+#ifndef GET_Y_LPARAM
+#define GET_Y_LPARAM(lp) ((int)(short)HIWORD(lp))
+#endif
+
+#ifndef GET_WHEEL_DELTA_WPARAM
+#define GET_WHEEL_DELTA_WPARAM(wp) ((short)HIWORD(wp))
+#endif
+
+#ifndef GET_XBUTTON_WPARAM
+#define GET_XBUTTON_WPARAM(wp) (HIWORD(wp))
+#endif
+
 
 static void win32__fatal_error(const char *message)
 {
@@ -142,6 +158,17 @@ static double win32__get_scale_factor(HWND hwnd)
         result = win32_GetDpiForWindow(hwnd) / (double)USER_DEFAULT_SCREEN_DPI;
     }
     return result;
+}
+
+static ghostty_input_mods_e win32__get_keyboard_mods(void)
+{
+    ghostty_input_mods_e mods = GHOSTTY_MODS_NONE;
+    if (GetKeyState(VK_CONTROL) < 0) mods |= GHOSTTY_MODS_CTRL;
+    if (GetKeyState(VK_SHIFT) < 0)   mods |= GHOSTTY_MODS_SHIFT;
+    if (GetKeyState(VK_MENU) < 0)    mods |= GHOSTTY_MODS_ALT;
+    if (GetKeyState(VK_LWIN) < 0)    mods |= GHOSTTY_MODS_SUPER;
+    if (GetKeyState(VK_RWIN) < 0)    mods |= GHOSTTY_MODS_SUPER;
+    return mods;
 }
 
 static void wakeup_cb(void *userdata) {
@@ -329,12 +356,6 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lpara
             }
 
             // Send keyboard events to ghostty
-            ghostty_input_mods_e mods = GHOSTTY_MODS_NONE;
-            if (GetKeyState(VK_CONTROL) < 0) mods |= GHOSTTY_MODS_CTRL;
-            if (GetKeyState(VK_SHIFT) < 0) mods |= GHOSTTY_MODS_SHIFT;
-            if (GetKeyState(VK_MENU) < 0) mods |= GHOSTTY_MODS_ALT;
-            if (GetKeyState(VK_LWIN) < 0 || GetKeyState(VK_RWIN) < 0) mods |= GHOSTTY_MODS_SUPER;
-
             uint32_t scan_code = (lparam >> 16) & 0xFF;
             bool extended = (lparam >> 24) & 1;
             uint32_t native_keycode = scan_code | (extended ? 0xE000u : 0u);
@@ -350,14 +371,15 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lpara
             ZeroMemory(&event, sizeof(event));
 
             event.action = key_released ? GHOSTTY_ACTION_RELEASE : was_down ? GHOSTTY_ACTION_REPEAT : GHOSTTY_ACTION_PRESS;
-            event.mods = mods;
+            event.mods = win32__get_keyboard_mods();
             event.consumed_mods = GHOSTTY_MODS_NONE;
             event.keycode = native_keycode;
             event.text = NULL;
             event.unshifted_codepoint = unshifted;
             event.composing = false;
 
-            if (g_surface) {
+            if (g_surface)
+            {
                 ghostty_surface_key(g_surface, event);
             }
         } break;
@@ -427,16 +449,76 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lpara
         case WM_XBUTTONDOWN:
         case WM_XBUTTONUP:
         {
-            // @Incomplete:
+            WORD xbutton = GET_XBUTTON_WPARAM(wparam);
+            ghostty_input_mouse_button_e button = GHOSTTY_MOUSE_UNKNOWN;
+            switch (msg)
+            {
+                case WM_LBUTTONDOWN: case WM_LBUTTONUP: { button = GHOSTTY_MOUSE_LEFT;   } break;
+                case WM_RBUTTONDOWN: case WM_RBUTTONUP: { button = GHOSTTY_MOUSE_RIGHT;  } break;
+                case WM_MBUTTONDOWN: case WM_MBUTTONUP: { button = GHOSTTY_MOUSE_MIDDLE; } break;
+                case WM_XBUTTONDOWN: case WM_XBUTTONUP:
+                {
+                    if (xbutton == XBUTTON1)
+                    {
+                        button = GHOSTTY_MOUSE_FOUR;
+                    }
+                    if (xbutton == XBUTTON2)
+                    {
+                        button = GHOSTTY_MOUSE_FIVE;
+                    }
+                } break;
+            }
+
+            ghostty_input_mouse_state_e state =
+                (msg == WM_LBUTTONDOWN || msg == WM_RBUTTONDOWN || msg == WM_MBUTTONDOWN) ? GHOSTTY_MOUSE_PRESS : GHOSTTY_MOUSE_RELEASE;
+
+            if (state == GHOSTTY_MOUSE_PRESS)
+            {
+                SetCapture(hwnd);
+            }
+            else if (
+                !(GetKeyState(VK_LBUTTON) < 0) &&
+                !(GetKeyState(VK_RBUTTON) < 0) &&
+                !(GetKeyState(VK_MBUTTON) < 0) &&
+                !(GetKeyState(VK_XBUTTON1) < 0) &&
+                !(GetKeyState(VK_XBUTTON2) < 0)
+            )
+            {
+                ReleaseCapture();
+            }
+
+            if (button != GHOSTTY_MOUSE_UNKNOWN)
+            {
+                if (g_surface)
+                {
+                    ghostty_surface_mouse_button(g_surface, state, button, win32__get_keyboard_mods());
+                }
+            }
+
+            return 0;
         } break;
 
         case WM_MOUSEMOVE:
         {
-            /*
-            int x = GET_X_LPARAM(lparam);
-            int y = GET_Y_LPARAM(lparam);
-            WPARAM keys = wparam;
-            */
+            double scale = win32__get_scale_factor(hwnd);
+            double mouse_x = GET_X_LPARAM(lparam) / scale;
+            double mouse_y = GET_Y_LPARAM(lparam) / scale;
+            if (g_surface)
+            {
+                ghostty_surface_mouse_pos(g_surface, mouse_x, mouse_y, win32__get_keyboard_mods());
+            }
+        } break;
+
+        case WM_MOUSEWHEEL:
+        case WM_MOUSEHWHEEL:
+        {
+            double wheel_x = msg == WM_MOUSEHWHEEL ? (double)GET_WHEEL_DELTA_WPARAM(wparam) / (double)WHEEL_DELTA : 0;
+            double wheel_y = msg == WM_MOUSEWHEEL ? (double)GET_WHEEL_DELTA_WPARAM(wparam) / (double)WHEEL_DELTA : 0;
+            if (g_surface)
+            {
+                ghostty_surface_mouse_scroll(g_surface, wheel_x, wheel_y, win32__get_keyboard_mods());
+            }
+            return 0;
         } break;
 
         case WM_IME_REQUEST:
