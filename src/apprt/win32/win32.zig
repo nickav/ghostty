@@ -12,6 +12,7 @@ pub const LONG = i32;
 pub const WPARAM = usize;
 pub const LPARAM = isize;
 pub const LRESULT = isize;
+pub const WCHAR = u16;
 
 pub const HANDLE = *anyopaque;
 pub const HRESULT = c_long;
@@ -71,6 +72,8 @@ pub const VK_RWIN: c_int = 0x5C;
 pub const VK_CONTROL: c_int = 0x11;
 pub const VK_RETURN: c_int = 0x0D;
 pub const VK_F11: c_int = 0x7A;
+
+pub const MAPVK_VK_TO_CHAR: UINT = 2;
 
 pub const SWP_NOMOVE: UINT = 0x0002;
 pub const SWP_NOZORDER: UINT = 0x0004;
@@ -538,3 +541,5 @@ pub inline fn isKeyDown(lparam: LPARAM) bool {
 pub inline fn wasKeyDown(lparam: LPARAM) bool {
     return (@as(usize, @bitCast(lparam)) & (1 << 30)) != 0;
 }
+
+pub extern "user32" fn MapVirtualKeyW(uCode: UINT, uMapType: UINT) callconv(.winapi) UINT;

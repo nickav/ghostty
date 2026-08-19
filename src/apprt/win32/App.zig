@@ -8,6 +8,7 @@ const apprt = @import("../../apprt.zig");
 const CoreApp = @import("../../App.zig");
 const configpkg = @import("../../config.zig");
 const Config = configpkg.Config;
+const input = @import("../../input.zig");
 
 const win32 = @import("./win32.zig");
 const gl = @import("./gl.zig");
@@ -34,7 +35,9 @@ gl_hdc: ?gl.HDC = null,
 gl_hglrc: ?gl.HGLRC = null,
 
 // @Incomplete: this is per-window state
-var g_placement: win32.WINDOWPLACEMENT = std.mem.zeroes(win32.WINDOWPLACEMENT);
+g_placement: win32.WINDOWPLACEMENT = std.mem.zeroes(win32.WINDOWPLACEMENT),
+// @Incomplete: this is per-window state
+high_surrogate: win32.WCHAR,
 
 pub fn init(
     self: *App,
@@ -264,33 +267,119 @@ fn wndProc(
                 else => {},
             }
         },
-        win32.WM_KEYDOWN => {
+        win32.WM_KEYDOWN,
+        win32.WM_KEYUP,
+        win32.WM_SYSKEYDOWN,
+        win32.WM_SYSKEYUP => {
             const self: *App = @ptrFromInt(@as(usize, @bitCast(win32.GetWindowLongPtrW(hwnd, win32.GWLP_USERDATA))));
 
             if (!win32.wasKeyDown(lparam) and win32.isKeyDown(lparam)) {
                 if (wparam == win32.VK_F11) {
-                    win32.toggleFullscreen(self.hwnd, &g_placement);
+                    win32.toggleFullscreen(self.hwnd, &self.g_placement);
                 }
-            }
 
-            return win32.DefWindowProcW(hwnd, msg, wparam, lparam);
-        },
-        win32.WM_SYSKEYDOWN => {
-            const self: *App = @ptrFromInt(@as(usize, @bitCast(win32.GetWindowLongPtrW(hwnd, win32.GWLP_USERDATA))));
-
-            const was_down = win32.wasKeyDown(lparam);
-            const is_down = win32.isKeyDown(lparam);
-
-            if (!was_down and is_down) {
                 // @Incomplete: @Robustness: holding Enter down shouldn't continuously cycle the window...
                 if (win32.GetKeyState(win32.VK_MENU) < 0 and wparam == win32.VK_RETURN) {
-                    win32.toggleFullscreen(self.hwnd, &g_placement);
-                    return 0;
+                    win32.toggleFullscreen(self.hwnd, &self.g_placement);
+                }
+            }
+
+            if (self.surface) |surface| {
+                var mods: input.Mods = .{};
+                if (win32.GetKeyState(win32.VK_CONTROL) < 0) {
+                    mods.ctrl = true;
+                }
+                if (win32.GetKeyState(win32.VK_SHIFT) < 0) {
+                    mods.shift = true;
+                }
+                if (win32.GetKeyState(win32.VK_MENU) < 0) {
+                    mods.alt = true;
+                }
+                if (win32.GetKeyState(win32.VK_LWIN) < 0 or win32.GetKeyState(win32.VK_RWIN) < 0) {
+                    mods.super = true;
+                }
+
+                const action: input.Action = if (msg == win32.WM_KEYUP or msg == win32.WM_SYSKEYUP)
+                    .release
+                else if (win32.wasKeyDown(lparam))
+                    .repeat
+                else
+                    .press;
+
+                const key = mapKey(lparam);
+
+                const event: input.KeyEvent = .{
+                    .action = action,
+                    .key = key,
+                    .mods = mods,
+                    .unshifted_codepoint = blk: {
+                        const result = win32.MapVirtualKeyW(@intCast(wparam), win32.MAPVK_VK_TO_CHAR);
+                        // High bit set means it's a dead key; low 16 bits are the char.
+                        const cp: u21 = @intCast(result & 0xFFFF);
+                        break :blk if (cp > 0) cp else 0;
+                    },
+                    // .consumed_mods = ,
+                };
+                if (event.key != input.Key.unidentified) {
+                    const effect = surface.core().keyCallback(event) catch |err| effect: {
+                        std.log.err("keyCallback failed: {}", .{err});
+                        break :effect .ignored;
+                    };
+                    _ = effect;
                 }
             }
 
             return win32.DefWindowProcW(hwnd, msg, wparam, lparam);
         },
+        win32.WM_CHAR, win32.WM_SYSCHAR => {
+            const self: *App = @ptrFromInt(@as(usize, @bitCast(win32.GetWindowLongPtrW(hwnd, win32.GWLP_USERDATA))));
+
+            const character: u16 = @truncate(wparam);
+            if (character >= 0xd800 and character <= 0xdbff) {
+                self.high_surrogate = @intCast(wparam);
+            } else {
+                var codepoint: u32 = 0;
+                if (character >= 0xdc00 and character <= 0xdfff) {
+                    if (self.high_surrogate != 0) {
+                        codepoint += (@as(u32, self.high_surrogate) - 0xd800) << 10;
+                        codepoint += @as(u32, character) - 0xdc00;
+                        codepoint += 0x10000;
+                    }
+                } else {
+                    codepoint = character;
+                }
+
+                self.high_surrogate = 0;
+                if (codepoint == '\r') codepoint = '\n';
+                if ((codepoint >= 32 and codepoint != 127) or codepoint == '\t' or codepoint == '\n') {
+                    if (self.surface) |surface| {
+
+                        if (std.math.cast(u21, codepoint)) |cp| {
+                            var buf: [4]u8 = undefined;
+                            if (std.unicode.utf8Encode(cp, &buf)) |len| {
+                                const utf8_text = buf[0..len];
+
+                                const event: input.KeyEvent = .{
+                                    .utf8 = utf8_text,
+                                };
+                                const effect = surface.core().keyCallback(event) catch |err| effect: {
+                                    std.log.err("keyCallback failed: {}", .{err});
+                                    break :effect .ignored;
+                                };
+                                _ = effect;
+
+                            } else |err| {
+                                log.warn("failed to encode codepoint err={}", .{err});
+                            }
+                        }
+
+                    }
+                }
+            }
+        },
+        // @Incomplete:
+        // win32.WM_UNICHAR => {},
+        // win32.WM_IME_REQUEST => {},
         win32.WM_DPICHANGED => {
             const suggested: *win32.RECT = @ptrFromInt(@as(usize, @bitCast(lparam)));
             _ = win32.SetWindowPos(
@@ -355,4 +444,16 @@ fn updateTheme(self: *App) void {
     }
 
     self.bg_brush = @ptrCast(win32.GetStockObject(if (self.use_light_theme == 0) win32.BLACK_BRUSH else win32.WHITE_BRUSH));
+}
+
+fn mapKey(lparam: win32.LPARAM) input.Key {
+    const scan_code: u32 = @intCast((lparam >> 16) & 0xff);
+    const extended: bool = (lparam >> 24) & 1 != 0;
+    const native: u32 = scan_code | (if (extended) @as(u32, 0xe000) else 0);
+
+    for (input.keycodes.entries) |entry| {
+        if (entry.native == native) return entry.key;
+    }
+
+    return .unidentified;
 }

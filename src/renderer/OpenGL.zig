@@ -177,9 +177,7 @@ fn win32SurfaceInit(surface: *apprt.Surface) !void {
     errdefer _ = win32gl.ReleaseDC(hwnd, hdc);
 
     var pfd: win32gl.PIXELFORMATDESCRIPTOR = .{
-        .dwFlags = win32gl.PFD_DRAW_TO_WINDOW |
-            win32gl.PFD_SUPPORT_OPENGL |
-            win32gl.PFD_DOUBLEBUFFER,
+        .dwFlags = win32gl.PFD_DRAW_TO_WINDOW | win32gl.PFD_SUPPORT_OPENGL | win32gl.PFD_DOUBLEBUFFER,
         .iPixelType = win32gl.PFD_TYPE_RGBA,
         .cColorBits = 32,
         .cDepthBits = 24,
@@ -193,8 +191,7 @@ fn win32SurfaceInit(surface: *apprt.Surface) !void {
         return error.Win32SetPixelFormatFailed;
     }
 
-    const hglrc = win32gl.wglCreateContext(hdc) orelse
-        return error.Win32WglCreateContextFailed;
+    const hglrc = win32gl.wglCreateContext(hdc) orelse return error.Win32WglCreateContextFailed;
     errdefer _ = win32gl.wglDeleteContext(hglrc);
     if (win32gl.wglMakeCurrent(hdc, hglrc) == 0) {
         return error.Win32WglMakeCurrentFailed;
