@@ -22,6 +22,14 @@ static Win32_DwmSetWindowAttribute *DwmSetWindowAttribute = NULL;
 #define DWMWA_USE_IMMERSIVE_DARK_MODE 20
 #endif
 
+#ifndef PROCESS_SYSTEM_DPI_AWARE
+#define PROCESS_SYSTEM_DPI_AWARE 1
+#endif
+
+#ifndef DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2
+#define DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 ((HANDLE) -4)
+#endif
+
 
 static void win32__fatal_error(const char *message)
 {
@@ -106,6 +114,36 @@ static void win32__update_theme(HWND hwnd)
     InvalidateRect(hwnd, NULL, TRUE);
 }
 
+static double win32__get_scale_factor(HWND hwnd)
+{
+    double result = 1.0;
+
+    typedef UINT Win32_GetDpiForWindowType(HWND hwnd);
+    static Win32_GetDpiForWindowType *win32_GetDpiForWindow = 0;
+    static bool did_load = false;
+    if (!did_load)
+    {
+        HMODULE user32 = LoadLibraryA("user32.dll");
+        win32_GetDpiForWindow = (Win32_GetDpiForWindowType *)GetProcAddress(user32, "GetDpiForWindow");
+        did_load = true;
+    }
+
+
+    if (win32_GetDpiForWindow == 0)
+    {
+        // NOTE(nick): I'm pretty sure on windows LOGPIXELSX and LOGPIXELSY are always the same,
+        // but @Robustness we should verify this assumption
+        HDC hdc = GetDC(hwnd);
+        result = (double)GetDeviceCaps(hdc, LOGPIXELSX) / (double)USER_DEFAULT_SCREEN_DPI;
+        ReleaseDC(hwnd, hdc);
+    }
+    else
+    {
+        result = win32_GetDpiForWindow(hwnd) / (double)USER_DEFAULT_SCREEN_DPI;
+    }
+    return result;
+}
+
 static void wakeup_cb(void *userdata) {
     HWND hwnd = (HWND)userdata;
     PostMessageW(hwnd, WM_WAKEUP, 0, 0);
@@ -118,48 +156,42 @@ static bool action_cb(
 ) {
     (void)app;
 
-    switch (action.tag) {
-    case GHOSTTY_ACTION_RENDER:
-        if (target.tag == GHOSTTY_TARGET_SURFACE) {
-            ghostty_surface_draw(target.target.surface);
-        }
-        return true;
+    switch (action.tag)
+    {
+        case GHOSTTY_ACTION_RENDER:
+        {
+            if (target.tag == GHOSTTY_TARGET_SURFACE)
+            {
+                ghostty_surface_draw(target.target.surface);
+            }
+            return true;
+        } break;
 
-    default:
-        return false;
+        default:
+        {
+            return false;
+        } break;
     }
 }
 
-static bool read_clipboard_cb(
-    void *userdata,
-    ghostty_clipboard_e clipboard,
-    void *state
-) {
+static bool read_clipboard_cb(void *userdata, ghostty_clipboard_e clipboard, void *state)
+{
     (void)userdata;
     (void)clipboard;
     (void)state;
     return false;
 }
 
-static void confirm_read_clipboard_cb(
-    void *userdata,
-    const char *str,
-    void *state,
-    ghostty_clipboard_request_e request
-) {
+static void confirm_read_clipboard_cb(void *userdata, const char *str, void *state, ghostty_clipboard_request_e request)
+{
     (void)userdata;
     (void)str;
     (void)state;
     (void)request;
 }
 
-static void write_clipboard_cb(
-    void *userdata,
-    ghostty_clipboard_e clipboard,
-    const ghostty_clipboard_content_s *content,
-    size_t len,
-    bool confirm
-) {
+static void write_clipboard_cb(void *userdata, ghostty_clipboard_e clipboard, const ghostty_clipboard_content_s *content, size_t len, bool confirm)
+{
     (void)userdata;
     (void)clipboard;
     (void)content;
@@ -167,16 +199,26 @@ static void write_clipboard_cb(
     (void)confirm;
 }
 
-static LRESULT CALLBACK WndProc(
-    HWND hwnd,
-    UINT msg,
-    WPARAM wparam,
-    LPARAM lparam
-) {
+static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
+{
     switch (msg) {
         case WM_CREATE:
         {
             win32__update_theme(hwnd);
+        } break;
+
+        case WM_DESTROY:
+        {
+            if (g_surface) {
+                ghostty_surface_free(g_surface);
+                g_surface = NULL;
+            }
+            if (g_app) {
+                ghostty_app_free(g_app);
+                g_app = NULL;
+            }
+            PostQuitMessage(0);
+            return 0;
         } break;
 
         case WM_SETTINGCHANGE:
@@ -202,10 +244,11 @@ static LRESULT CALLBACK WndProc(
 
         case WM_SIZE:
         {
-            if (g_surface) {
-                uint32_t width = (uint32_t)LOWORD(lparam);
-                uint32_t height = (uint32_t)HIWORD(lparam);
+            uint32_t width = (uint32_t)LOWORD(lparam);
+            uint32_t height = (uint32_t)HIWORD(lparam);
 
+            if (g_surface)
+            {
                 ghostty_surface_set_size(g_surface, width, height);
                 // @Robustness: make this a proper callback somehow into ghostty?
                 glViewport(0, 0, (int)width, (int)height);
@@ -214,18 +257,23 @@ static LRESULT CALLBACK WndProc(
             return 0;
         } break;
 
-        case WM_DESTROY:
+        case WM_DPICHANGED:
         {
-            if (g_surface) {
-                ghostty_surface_free(g_surface);
-                g_surface = NULL;
+            // Resize windowed mode windows that either permit rescaling or that
+            // need it to compensate for non-client area scaling
+            RECT *suggested = (RECT *)lparam;
+            SetWindowPos(hwnd, HWND_TOP,
+                            suggested->left,
+                            suggested->top,
+                            suggested->right - suggested->left,
+                            suggested->bottom - suggested->top,
+                            SWP_NOACTIVATE | SWP_NOZORDER);
+
+            double scale = (double)LOWORD(wparam) / (double)USER_DEFAULT_SCREEN_DPI;
+            if (g_surface)
+            {
+                ghostty_surface_set_content_scale(g_surface, scale, scale);
             }
-            if (g_app) {
-                ghostty_app_free(g_app);
-                g_app = NULL;
-            }
-            PostQuitMessage(0);
-            return 0;
         } break;
 
         case WM_GETMINMAXINFO:
@@ -370,6 +418,27 @@ static LRESULT CALLBACK WndProc(
             */
         } break;
 
+        case WM_LBUTTONDOWN:
+        case WM_LBUTTONUP:
+        case WM_RBUTTONDOWN:
+        case WM_RBUTTONUP:
+        case WM_MBUTTONDOWN:
+        case WM_MBUTTONUP:
+        case WM_XBUTTONDOWN:
+        case WM_XBUTTONUP:
+        {
+            // @Incomplete:
+        } break;
+
+        case WM_MOUSEMOVE:
+        {
+            /*
+            int x = GET_X_LPARAM(lparam);
+            int y = GET_Y_LPARAM(lparam);
+            WPARAM keys = wparam;
+            */
+        } break;
+
         case WM_IME_REQUEST:
         {
             /*
@@ -418,9 +487,9 @@ int main(int argc, char **argv) {
         Win32_SetProcessDpiAwareness *SetProcessDpiAwareness = (Win32_SetProcessDpiAwareness *) GetProcAddress(user32, "SetProcessDpiAwareness");
 
         if (SetProcessDpiAwarenessContext) {
-            SetProcessDpiAwarenessContext(((HANDLE) -4) /* DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 */);
+            SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
         } else if (SetProcessDpiAwareness) {
-            SetProcessDpiAwareness(1 /* PROCESS_SYSTEM_DPI_AWARE */);
+            SetProcessDpiAwareness(PROCESS_SYSTEM_DPI_AWARE);
         } else {
             SetProcessDPIAware();
         }
@@ -432,6 +501,7 @@ int main(int argc, char **argv) {
         HMODULE uxtheme = LoadLibraryExA("uxtheme.dll", NULL, LOAD_LIBRARY_SEARCH_SYSTEM32);
         if (uxtheme)
         {
+            // @Robustness: is this the expected way to call this?
             Win32_SetPreferredAppMode *SetPreferredAppMode = (Win32_SetPreferredAppMode *)GetProcAddress(uxtheme, MAKEINTRESOURCEA(135));
             if (SetPreferredAppMode)
             {
@@ -511,6 +581,7 @@ int main(int argc, char **argv) {
     surface_config.platform_tag = GHOSTTY_PLATFORM_WINDOWS;
     surface_config.platform.windows.hwnd = hwnd;
     surface_config.userdata = hwnd;
+    surface_config.scale_factor = win32__get_scale_factor(hwnd);
 
     g_surface = ghostty_surface_new(g_app, &surface_config);
     if (!g_surface) {
