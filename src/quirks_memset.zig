@@ -70,7 +70,8 @@ comptime {
     const enabled =
         std.simd.suggestVectorLength(u8) != null and
         builtin.object_format != .c and
-        !(linkage == .weak and builtin.object_format == .coff);
+        // NOTE(nick): this is to work around a build error on Windows
+        builtin.object_format != .coff;
 
     if (enabled) @export(&memset, .{
         .name = "memset",

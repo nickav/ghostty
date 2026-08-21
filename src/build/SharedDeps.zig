@@ -544,6 +544,12 @@ pub fn add(
         step.root_module.addImport("zf", dep.module("zf"));
     }
 
+    if (step.rootModuleTarget().os.tag == .windows and
+        self.config.renderer == .opengl)
+    {
+        step.root_module.linkSystemLibrary("opengl32", .{});
+    }
+
     // Mac Stuff
     if (step.rootModuleTarget().os.tag.isDarwin()) {
         if (b.lazyDependency("zig_objc", .{
@@ -690,6 +696,7 @@ pub fn add(
         switch (self.config.app_runtime) {
             .none => {},
             .gtk => try self.addGtkNg(step),
+            .win32 => self.addWin32(step),
         }
     }
 
@@ -698,6 +705,16 @@ pub fn add(
     self.framedata.addImport(step);
 
     return static_libs;
+}
+
+fn addWin32(
+    self: *const SharedDeps,
+    step: *std.Build.Step.Compile,
+) void {
+    _ = self;
+    step.root_module.linkSystemLibrary("user32", .{});
+    step.root_module.linkSystemLibrary("gdi32", .{});
+    step.root_module.linkSystemLibrary("kernel32", .{});
 }
 
 /// Setup the dependencies for the GTK apprt build.

@@ -2,6 +2,7 @@
 pub const OpenGL = @This();
 
 const std = @import("std");
+const global = @import("../global.zig");
 const Allocator = std.mem.Allocator;
 const builtin = @import("builtin");
 const gl = @import("opengl");
@@ -45,14 +46,24 @@ blending: configpkg.Config.AlphaBlending,
 /// The most recently presented target, in case we need to present it again.
 last_target: ?Target = null,
 
+/// HDC used for SwapBuffers on win32. Always null on other apprts.
+win32_hdc: ?*anyopaque = null,
+
 /// NOTE: This is an error{}!OpenGL instead of just OpenGL for parity with
 ///       Metal, since it needs to be fallible so does this, even though it
 ///       can't actually fail.
 pub fn init(alloc: Allocator, opts: rendererpkg.Options) error{}!OpenGL {
-    return .{
+    var self: OpenGL = .{
         .alloc = alloc,
         .blending = opts.config.blending,
     };
+
+    switch (apprt.runtime) {
+        apprt.win32 => self.win32_hdc = opts.rt_surface.app.gl_hdc.?,
+        else => {},
+    }
+
+    return self;
 }
 
 pub fn deinit(self: *OpenGL) void {
@@ -158,10 +169,7 @@ fn prepareContext(getProcAddress: anytype) !void {
     try gl.enable(gl.c.GL_FRAMEBUFFER_SRGB);
 }
 
-/// This is called early right after surface creation.
 pub fn surfaceInit(surface: *apprt.Surface) !void {
-    _ = surface;
-
     switch (apprt.runtime) {
         else => @compileError("unsupported app runtime for OpenGL"),
 
@@ -173,6 +181,14 @@ pub fn surfaceInit(surface: *apprt.Surface) !void {
             // TODO(mitchellh): this does nothing today to allow libghostty
             // to compile for OpenGL targets but libghostty is strictly
             // broken for rendering on this platforms.
+        },
+
+        apprt.win32 => {
+            const win32gl = @import("../apprt/win32/gl.zig");
+            const ctx = try win32gl.init(surface.app.hwnd, MIN_VERSION_MAJOR, MIN_VERSION_MINOR);
+            surface.app.gl_hdc = ctx.hdc;
+            surface.app.gl_hglrc = ctx.hglrc;
+            try prepareContext(&win32gl.getProcAddress);
         },
     }
 
@@ -208,6 +224,8 @@ pub fn threadEnter(self: *const OpenGL, surface: *apprt.Surface) !void {
             // on the main thread. As such, we don't do anything here.
         },
 
+        apprt.win32 => {},
+
         apprt.embedded => {
             // TODO(mitchellh): this does nothing today to allow libghostty
             // to compile for OpenGL targets but libghostty is strictly
@@ -226,6 +244,9 @@ pub fn threadExit(self: *const OpenGL) void {
         apprt.gtk => {
             // We don't need to do any unloading for GTK because we may
             // be sharing the global bindings with other windows.
+        },
+        
+        apprt.win32 => {
         },
 
         apprt.embedded => {
@@ -286,6 +307,15 @@ pub fn surfaceSize(self: *const OpenGL) !struct { width: u32, height: u32 } {
     };
 }
 
+/// Called by the win32 apprt on WM_SIZE.
+pub fn resizeViewport(self: *const OpenGL, width: u32, height: u32) void {
+    _ = self;
+    switch (apprt.runtime) {
+        apprt.win32 => gl.glad.context.Viewport.?(0, 0, @intCast(width), @intCast(height)),
+        else => {},
+    }
+}
+
 /// Initialize a new render target which can be presented by this API.
 pub fn initTarget(self: *const OpenGL, width: usize, height: usize) !Target {
     return Target.init(.{
@@ -328,6 +358,16 @@ pub fn present(self: *OpenGL, target: Target) !void {
 
     // Keep track of this target in case we need to repeat it.
     self.last_target = target;
+
+    switch (apprt.runtime) {
+        apprt.win32 => {
+            const win32gl = @import("../apprt/win32/gl.zig");
+            const hdc: win32gl.HDC = @ptrCast(self.win32_hdc.?);
+            if (win32gl.SwapBuffers(hdc) == 0) return error.Win32SwapBuffersFailed;
+            std.log.warn("[TIMING] SwapBuffers t={d}ms", .{@divTrunc(std.Io.Timestamp.now(global.io(), .awake).nanoseconds, std.time.ns_per_ms)});
+        },
+        else => {},
+    }
 }
 
 /// Present the last presented target again.
