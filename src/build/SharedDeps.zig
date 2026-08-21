@@ -657,15 +657,20 @@ pub fn add(
         }
     }
 
-    // If we're building an exe then we have additional dependencies.
-    if (step.kind != .lib) {
-        // We always statically compile glad
+    // We always statically compile glad whenever we're using the OpenGL
+    // renderer, regardless of whether we're an exe or a lib. Libs need
+    // this too now that Windows drives OpenGL through the embedded
+    // library (apprt.embedded), not just through exe-only apprts.
+    if (self.config.renderer == .opengl) {
         step.root_module.addIncludePath(b.path("vendor/glad/include/"));
         step.root_module.addCSourceFile(.{
             .file = b.path("vendor/glad/src/gl.c"),
             .flags = &.{},
         });
+    }
 
+    // If we're building an exe then we have additional dependencies.
+    if (step.kind != .lib) {
         // When we're targeting flatpak we ALWAYS link GTK so we
         // get access to glib for dbus.
         if (self.config.flatpak) {

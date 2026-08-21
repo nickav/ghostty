@@ -1,0 +1,899 @@
+#define GHOSTTY_STATIC
+#include "ghostty.h"
+
+#define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
+#define VC_EXTRALEAN
+#define UNICODE
+#define _UNICODE
+#include <windows.h>
+#include <imm.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#define WM_WAKEUP (WM_APP + 1)
+
+// @Sync: must stay in sync with dist/windows/ghostty.rc's ID_ICON_GHOSTTY
+#define ID_ICON_GHOSTTY 1
+
+static ghostty_app_t g_app = NULL;
+static ghostty_surface_t g_surface = NULL;
+
+
+#pragma comment(lib, "opengl32.lib")
+extern void WINAPI glViewport(int x, int y, int width, int height);
+
+typedef HRESULT Win32_DwmSetWindowAttribute(HWND hwnd, DWORD dwAttribute, LPCVOID pvAttribute, DWORD cbAttribute);
+static Win32_DwmSetWindowAttribute *DwmSetWindowAttribute = NULL;
+
+#ifndef DWMWA_USE_IMMERSIVE_DARK_MODE
+#define DWMWA_USE_IMMERSIVE_DARK_MODE 20
+#endif
+
+#ifndef PROCESS_SYSTEM_DPI_AWARE
+#define PROCESS_SYSTEM_DPI_AWARE 1
+#endif
+
+#ifndef DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2
+#define DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 ((HANDLE) -4)
+#endif
+
+#ifndef GET_X_LPARAM
+#define GET_X_LPARAM(lp) ((int)(short)LOWORD(lp))
+#endif
+
+#ifndef GET_Y_LPARAM
+#define GET_Y_LPARAM(lp) ((int)(short)HIWORD(lp))
+#endif
+
+#ifndef GET_WHEEL_DELTA_WPARAM
+#define GET_WHEEL_DELTA_WPARAM(wp) ((short)HIWORD(wp))
+#endif
+
+#ifndef GET_XBUTTON_WPARAM
+#define GET_XBUTTON_WPARAM(wp) (HIWORD(wp))
+#endif
+
+
+static void win32__fatal_error(const char *message)
+{
+    MessageBoxA(NULL, message, "Error", MB_ICONEXCLAMATION);
+    ExitProcess(0);
+}
+
+static bool win32__show_confirm(const char *prompt)
+{
+    int result = MessageBoxA(NULL, prompt, "Ghostty", MB_YESNO | MB_ICONQUESTION);
+    return (result == IDYES);
+}
+
+static bool win32__show_confirm_warning(const char *prompt)
+{
+    int result = MessageBoxA(NULL, prompt, "Ghostty", MB_YESNO | MB_ICONWARNING);
+    return (result == IDYES);
+}
+
+static void win32__toggle_fullscreen(HWND hwnd)
+{
+    static WINDOWPLACEMENT placement = {0};
+
+    bool is_fullscreen = false;
+    {
+        MONITORINFO monitor_info = {0};
+        monitor_info.cbSize = sizeof(MONITORINFO);
+        GetMonitorInfo(MonitorFromWindow(hwnd, MONITOR_DEFAULTTOPRIMARY), &monitor_info);
+
+        RECT rect;
+        GetWindowRect(hwnd, &rect);
+
+        is_fullscreen = (
+            rect.left == monitor_info.rcMonitor.left
+            && rect.right == monitor_info.rcMonitor.right
+            && rect.top == monitor_info.rcMonitor.top
+            && rect.bottom == monitor_info.rcMonitor.bottom
+        );
+    }
+
+    DWORD style = GetWindowLong(hwnd, GWL_STYLE);
+
+    if (!is_fullscreen)
+    {
+        MONITORINFO monitor_info = {sizeof(monitor_info)};
+
+        if (
+            GetWindowPlacement(hwnd, &placement) &&
+            GetMonitorInfo(MonitorFromWindow(hwnd, MONITOR_DEFAULTTOPRIMARY), &monitor_info)
+        ) {
+            SetWindowLong(hwnd, GWL_STYLE, style & ~WS_OVERLAPPEDWINDOW);
+
+            SetWindowPos(
+                hwnd,
+                HWND_TOP,
+                monitor_info.rcMonitor.left,
+                monitor_info.rcMonitor.top,
+                monitor_info.rcMonitor.right  - monitor_info.rcMonitor.left,
+                monitor_info.rcMonitor.bottom - monitor_info.rcMonitor.top,
+                SWP_NOOWNERZORDER | SWP_FRAMECHANGED
+            );
+        }
+    } else {
+        SetWindowLong(hwnd, GWL_STYLE, style | WS_OVERLAPPEDWINDOW);
+        SetWindowPlacement(hwnd, &placement);
+        DWORD flags = SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOOWNERZORDER | SWP_FRAMECHANGED;
+        SetWindowPos(hwnd, 0, 0, 0, 0, 0, flags);
+    }
+}
+
+
+static void win32__update_theme(HWND hwnd)
+{
+    BOOL is_light = FALSE;
+    DWORD use_light_theme = 0;
+    DWORD data_size = sizeof(use_light_theme);
+    LSTATUS status = RegGetValueA(
+        HKEY_CURRENT_USER,
+        "Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize",
+        "AppsUseLightTheme", RRF_RT_ANY, NULL, &use_light_theme, &data_size);
+
+    if (status == ERROR_SUCCESS) {
+        is_light = use_light_theme != 0;
+    }
+
+    if (DwmSetWindowAttribute)
+    {
+        BOOL dark = !is_light;
+        DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &dark, sizeof(dark));
+    }
+
+    HBRUSH brush = (HBRUSH)GetStockObject(is_light ? WHITE_BRUSH : BLACK_BRUSH);
+    SetClassLongPtrW(hwnd, GCLP_HBRBACKGROUND, (LONG_PTR)brush);
+    InvalidateRect(hwnd, NULL, TRUE);
+}
+
+static double win32__get_scale_factor(HWND hwnd)
+{
+    double result = 1.0;
+
+    typedef UINT Win32_GetDpiForWindowType(HWND hwnd);
+    static Win32_GetDpiForWindowType *win32_GetDpiForWindow = 0;
+    static bool did_load = false;
+    if (!did_load)
+    {
+        HMODULE user32 = LoadLibraryA("user32.dll");
+        win32_GetDpiForWindow = (Win32_GetDpiForWindowType *)GetProcAddress(user32, "GetDpiForWindow");
+        did_load = true;
+    }
+
+
+    if (win32_GetDpiForWindow == 0)
+    {
+        // NOTE(nick): I'm pretty sure on windows LOGPIXELSX and LOGPIXELSY are always the same,
+        // but @Robustness we should verify this assumption
+        HDC hdc = GetDC(hwnd);
+        result = (double)GetDeviceCaps(hdc, LOGPIXELSX) / (double)USER_DEFAULT_SCREEN_DPI;
+        ReleaseDC(hwnd, hdc);
+    }
+    else
+    {
+        result = win32_GetDpiForWindow(hwnd) / (double)USER_DEFAULT_SCREEN_DPI;
+    }
+    return result;
+}
+
+static ghostty_input_mods_e win32__get_keyboard_mods(void)
+{
+    ghostty_input_mods_e mods = GHOSTTY_MODS_NONE;
+    if (GetKeyState(VK_CONTROL) < 0) mods |= GHOSTTY_MODS_CTRL;
+    if (GetKeyState(VK_SHIFT) < 0)   mods |= GHOSTTY_MODS_SHIFT;
+    if (GetKeyState(VK_MENU) < 0)    mods |= GHOSTTY_MODS_ALT;
+    if (GetKeyState(VK_LWIN) < 0)    mods |= GHOSTTY_MODS_SUPER;
+    if (GetKeyState(VK_RWIN) < 0)    mods |= GHOSTTY_MODS_SUPER;
+    return mods;
+}
+
+static void win32__ghostty_wakeup(void *userdata)
+{
+    HWND hwnd = (HWND)userdata;
+    PostMessageW(hwnd, WM_WAKEUP, 0, 0);
+}
+
+static bool win32__ghostty_action(ghostty_app_t app, ghostty_target_s target, ghostty_action_s action)
+{
+    (void)app;
+
+    switch (action.tag)
+    {
+        case GHOSTTY_ACTION_RENDER:
+        {
+            if (target.tag == GHOSTTY_TARGET_SURFACE)
+            {
+                ghostty_surface_draw(target.target.surface);
+            }
+            return true;
+        } break;
+
+        default:
+        {
+            return false;
+        } break;
+    }
+}
+
+static bool win32__ghostty_read_clipboard(void *userdata, ghostty_clipboard_e clipboard, void *state)
+{
+    if (clipboard != GHOSTTY_CLIPBOARD_STANDARD) {
+        // no primary selection on Windows
+        return false;
+    }
+
+    HWND hwnd = (HWND)userdata;
+    if (!OpenClipboard(hwnd)) {
+        return false;
+    }
+
+    HANDLE handle = GetClipboardData(CF_UNICODETEXT);
+    if (!handle) {
+        CloseClipboard();
+        return false;
+    }
+
+    WCHAR *wide = (WCHAR *)GlobalLock(handle);
+    if (!wide) {
+        CloseClipboard();
+        return false;
+    }
+
+    int utf8_len = WideCharToMultiByte(CP_UTF8, 0, wide, -1, NULL, 0, NULL, NULL);
+    bool ok = false;
+    if (utf8_len > 0) {
+        char *utf8 = (char *)malloc(utf8_len);
+        if (utf8) {
+            WideCharToMultiByte(CP_UTF8, 0, wide, -1, utf8, utf8_len, NULL, NULL);
+            ghostty_surface_complete_clipboard_request(g_surface, utf8, state, false);
+            free(utf8);
+            ok = true;
+        }
+    }
+
+    GlobalUnlock(handle);
+    CloseClipboard();
+    return ok;
+}
+
+static void win32__ghostty_confirm_read_clipboard(void *userdata, const char *str, void *state, ghostty_clipboard_request_e request)
+{
+    (void)userdata;
+
+    const char *prompt = "Allow the terminal to read the clipboard?";
+    switch (request)
+    {
+        case GHOSTTY_CLIPBOARD_REQUEST_PASTE:
+        {
+            prompt = "Paste clipboard contents into the terminal?";
+        } break;
+        case GHOSTTY_CLIPBOARD_REQUEST_OSC_52_READ:
+        {
+            prompt = "Allow the running program to read the clipboard (OSC 52)?";
+        } break;
+        case GHOSTTY_CLIPBOARD_REQUEST_OSC_52_WRITE:
+        {
+            prompt = "Allow the running program to write the clipboard (OSC 52)?";
+        } break;
+    }
+
+    if (win32__show_confirm(prompt))
+    {
+        ghostty_surface_complete_clipboard_request(g_surface, str, state, true);
+    }
+}
+
+static void win32__ghostty_write_clipboard(void *userdata, ghostty_clipboard_e clipboard, const ghostty_clipboard_content_s *content, size_t len, bool confirm)
+{
+    if (clipboard != GHOSTTY_CLIPBOARD_STANDARD) {
+        return;
+    }
+
+    const char *text = NULL;
+    for (size_t i = 0; i < len; i++) {
+        if (strcmp(content[i].mime, "text/plain") == 0) {
+            text = content[i].data;
+            break;
+        }
+    }
+    if (!text) {
+        return;
+    }
+
+    if (confirm) {
+        if (!win32__show_confirm("Allow Ghostty to write to the clipboard?"))
+        {
+            return;
+        }
+    }
+
+    int wide_len = MultiByteToWideChar(CP_UTF8, 0, text, -1, NULL, 0);
+    if (wide_len <= 0) {
+        return;
+    }
+
+    HANDLE handle = GlobalAlloc(GMEM_MOVEABLE, (SIZE_T)wide_len * sizeof(WCHAR));
+    if (!handle) {
+        return;
+    }
+
+    WCHAR *buffer = (WCHAR *)GlobalLock(handle);
+    if (!buffer) {
+        GlobalFree(handle);
+        return;
+    }
+    MultiByteToWideChar(CP_UTF8, 0, text, -1, buffer, wide_len);
+    GlobalUnlock(handle);
+
+    HWND hwnd = (HWND)userdata;
+    if (!OpenClipboard(hwnd)) {
+        GlobalFree(handle);
+        return;
+    }
+    EmptyClipboard();
+    SetClipboardData(CF_UNICODETEXT, handle); // clipboard now owns `handle`; do not free it
+    CloseClipboard();
+}
+
+static void win32__ghostty_close_surface(void *userdata, bool process_alive)
+{
+    (void)process_alive;
+
+    HWND hwnd = (HWND)userdata;
+    if (!hwnd) {
+        return;
+    }
+
+    PostMessage(hwnd, WM_CLOSE, 0, 0);
+}
+
+static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
+{
+    switch (msg) {
+        case WM_CREATE:
+        {
+            win32__update_theme(hwnd);
+        } break;
+
+        case WM_CLOSE:
+        {
+            #if 0
+            if (g_surface && ghostty_surface_needs_confirm_quit(g_surface))
+            {
+                if (!win32__show_confirm_warning("The terminal still has a running process. If you close the terminal the process will be killed."))
+                {
+                    return 0;
+                }
+            }
+            #endif
+
+            DestroyWindow(hwnd);
+            return 0;
+        } break;
+
+        case WM_DESTROY:
+        {
+            if (g_surface) {
+                ghostty_surface_free(g_surface);
+                g_surface = NULL;
+            }
+            if (g_app) {
+                ghostty_app_free(g_app);
+                g_app = NULL;
+            }
+            PostQuitMessage(0);
+            return 0;
+        } break;
+
+        case WM_SETTINGCHANGE:
+        {
+            if (lparam && lstrcmpiW((LPCWSTR)lparam, L"ImmersiveColorSet") == 0)
+            {
+                win32__update_theme(hwnd);
+            }
+        } break;
+
+        case WM_DWMCOLORIZATIONCOLORCHANGED:
+        {
+            win32__update_theme(hwnd);
+        } break;
+
+        case WM_WAKEUP:
+        {
+            if (g_app) {
+                ghostty_app_tick(g_app);
+            }
+            return 0;
+        } break;
+
+        case WM_SIZE:
+        {
+            uint32_t width = (uint32_t)LOWORD(lparam);
+            uint32_t height = (uint32_t)HIWORD(lparam);
+
+            if (g_surface)
+            {
+                ghostty_surface_set_size(g_surface, width, height);
+                // @Robustness: make this a proper callback somehow into ghostty?
+                glViewport(0, 0, (int)width, (int)height);
+                ghostty_surface_draw(g_surface);
+            }
+            return 0;
+        } break;
+
+        case WM_DPICHANGED:
+        {
+            // Resize windowed mode windows that either permit rescaling or that
+            // need it to compensate for non-client area scaling
+            RECT *suggested = (RECT *)lparam;
+            SetWindowPos(hwnd, HWND_TOP,
+                            suggested->left,
+                            suggested->top,
+                            suggested->right - suggested->left,
+                            suggested->bottom - suggested->top,
+                            SWP_NOACTIVATE | SWP_NOZORDER);
+
+            double scale = (double)LOWORD(wparam) / (double)USER_DEFAULT_SCREEN_DPI;
+            if (g_surface)
+            {
+                ghostty_surface_set_content_scale(g_surface, scale, scale);
+            }
+        } break;
+
+        case WM_GETMINMAXINFO:
+        {
+            // NOTE(nick): set window size limits
+            /*
+            DWORD style = WS_OVERLAPPEDWINDOW;
+            RECT wr = {0, 0, (LONG)game_width, (LONG)game_height};
+            AdjustWindowRect(&wr, style, FALSE);
+            int width = (int)(wr.right - wr.left);
+            int height = (int)(wr.bottom - wr.top);
+
+            MINMAXINFO *info = (MINMAXINFO *)lparam;
+            info->ptMinTrackSize.x = min_width;
+            info->ptMinTrackSize.y = min_height;
+            info->ptMaxTrackSize.x = max_width;
+            info->ptMaxTrackSize.y = max_height;
+            return 0;
+            */
+        } break;
+
+        case WM_SYSCOMMAND:
+        {
+            switch (wparam)
+            {
+                // User trying to access application menu using ALT
+                case SC_KEYMENU: {
+                    // NOTE(nick): prevent beep sound when pressing alt key combo (e.g. alt + enter)
+                    return 0;
+                } break;
+            }
+        } break;
+
+        case WM_SYSKEYDOWN:
+        case WM_SYSKEYUP:
+        case WM_KEYDOWN:
+        case WM_KEYUP:
+        {
+            bool was_down = !!(lparam & (1u << 30));
+            bool is_down  =  !(lparam & (1u << 31));
+            bool key_released    = (msg == WM_KEYUP || msg == WM_SYSKEYUP);
+
+            // NOTE(nick): this is expected of windows apps in general -- but is this something that ghostty wants us to not do for whatever reason?
+            if (!was_down && is_down)
+            {
+                if (wparam == VK_F11)
+                {
+                    win32__toggle_fullscreen(hwnd);
+                }
+
+                if ((GetKeyState(VK_MENU) & 0x8000) && wparam == VK_RETURN)
+                {
+                    win32__toggle_fullscreen(hwnd);
+                }
+            }
+
+            // Send keyboard events to ghostty
+            uint32_t scan_code = (lparam >> 16) & 0xFF;
+            bool extended = (lparam >> 24) & 1;
+            uint32_t native_keycode = scan_code | (extended ? 0xE000u : 0u);
+
+            uint32_t unshifted = 0;
+            {
+                UINT result = MapVirtualKeyW((UINT)wparam, MAPVK_VK_TO_CHAR);
+                uint32_t cp = result & 0xFFFF;
+                if (cp > 0) unshifted = cp;
+            }
+
+            ghostty_input_mods_e mods = win32__get_keyboard_mods();
+
+            //
+            // We apply a simple heuristic here that has worked for years
+            // so far: control and command never contribute to the translation of text,
+            // assume everything else did.
+            //
+            // @See NSEvent+Extension.swift
+            //
+            ghostty_input_mods_e consumed_mods = mods & ~(GHOSTTY_MODS_SHIFT | GHOSTTY_MODS_SUPER);
+
+            ghostty_input_key_s event;
+            ZeroMemory(&event, sizeof(event));
+
+            event.action = key_released ? GHOSTTY_ACTION_RELEASE : was_down ? GHOSTTY_ACTION_REPEAT : GHOSTTY_ACTION_PRESS;
+            event.mods = mods;
+            event.consumed_mods = consumed_mods;
+            event.keycode = native_keycode;
+            event.unshifted_codepoint = unshifted;
+            event.text = NULL;
+            event.composing = false;
+
+            if (g_surface)
+            {
+                ghostty_surface_key(g_surface, event);
+            }
+        } break;
+
+        case WM_SYSCHAR:
+        case WM_CHAR:
+        {
+            // Send text events to ghostty
+            static WCHAR g_high_surrogate = 0;
+            WCHAR ch = (WCHAR)wparam;
+            if (ch >= 0xD800 && ch <= 0xDBFF) {
+                g_high_surrogate = ch;
+                return 0;
+            }
+
+            WCHAR units[2];
+            int unit_count;
+            uint32_t codepoint;
+            if (ch >= 0xDC00 && ch <= 0xDFFF && g_high_surrogate != 0) {
+                units[0] = g_high_surrogate;
+                units[1] = ch;
+                unit_count = 2;
+                codepoint = 0x10000 + (((uint32_t)g_high_surrogate - 0xD800) << 10) + ((uint32_t)ch - 0xDC00);
+            } else {
+                units[0] = ch;
+                unit_count = 1;
+                codepoint = ch;
+            }
+            
+            g_high_surrogate = 0;
+
+            if (codepoint == '\r') codepoint = '\n';
+            if ((codepoint >= 32 && codepoint != 127) && codepoint != '\n')
+            {
+                char utf8[4];
+                int len = WideCharToMultiByte(CP_UTF8, 0, units, unit_count, utf8, sizeof(utf8), NULL, NULL);
+                if (g_surface && len > 0)
+                {
+                    ghostty_surface_text(g_surface, utf8, (uintptr_t)len);
+                }
+            }
+            return 0;
+        } break;
+
+        case WM_UNICHAR:
+        {
+            /*
+            if (w_param == UNICODE_NOCHAR)
+            {
+                // WM_UNICHAR is not sent by Windows, but is sent by some
+                // third-party input method engine
+                // Returning TRUE here announces support for this message
+                result = true;
+            }
+            else
+            {
+                u32 codepoint = (u32)w_param;
+                if (codepoint == '\r')
+                {
+                    codepoint = '\n';
+                }
+
+                // NOTE(nick): filter out non display characters (e.g. backspace)
+                if ((codepoint >= 32 && codepoint != 127) || (codepoint == '\t' || codepoint == '\n'))
+                {
+                }
+            }
+            */
+        } break;
+
+        case WM_LBUTTONDOWN:
+        case WM_LBUTTONUP:
+        case WM_RBUTTONDOWN:
+        case WM_RBUTTONUP:
+        case WM_MBUTTONDOWN:
+        case WM_MBUTTONUP:
+        case WM_XBUTTONDOWN:
+        case WM_XBUTTONUP:
+        {
+            WORD xbutton = GET_XBUTTON_WPARAM(wparam);
+            ghostty_input_mouse_button_e button = GHOSTTY_MOUSE_UNKNOWN;
+            switch (msg)
+            {
+                case WM_LBUTTONDOWN: case WM_LBUTTONUP: { button = GHOSTTY_MOUSE_LEFT;   } break;
+                case WM_RBUTTONDOWN: case WM_RBUTTONUP: { button = GHOSTTY_MOUSE_RIGHT;  } break;
+                case WM_MBUTTONDOWN: case WM_MBUTTONUP: { button = GHOSTTY_MOUSE_MIDDLE; } break;
+                case WM_XBUTTONDOWN: case WM_XBUTTONUP:
+                {
+                    if (xbutton == XBUTTON1)
+                    {
+                        button = GHOSTTY_MOUSE_FOUR;
+                    }
+                    if (xbutton == XBUTTON2)
+                    {
+                        button = GHOSTTY_MOUSE_FIVE;
+                    }
+                } break;
+            }
+
+            ghostty_input_mouse_state_e state =
+                (msg == WM_LBUTTONDOWN || msg == WM_RBUTTONDOWN || msg == WM_MBUTTONDOWN) ? GHOSTTY_MOUSE_PRESS : GHOSTTY_MOUSE_RELEASE;
+
+            if (state == GHOSTTY_MOUSE_PRESS)
+            {
+                SetCapture(hwnd);
+            }
+            else if (
+                !(GetKeyState(VK_LBUTTON) < 0) &&
+                !(GetKeyState(VK_RBUTTON) < 0) &&
+                !(GetKeyState(VK_MBUTTON) < 0) &&
+                !(GetKeyState(VK_XBUTTON1) < 0) &&
+                !(GetKeyState(VK_XBUTTON2) < 0)
+            )
+            {
+                ReleaseCapture();
+            }
+
+            if (button != GHOSTTY_MOUSE_UNKNOWN)
+            {
+                if (g_surface)
+                {
+                    ghostty_surface_mouse_button(g_surface, state, button, win32__get_keyboard_mods());
+                }
+            }
+
+            return 0;
+        } break;
+
+        case WM_MOUSEMOVE:
+        {
+            double scale = win32__get_scale_factor(hwnd);
+            double mouse_x = GET_X_LPARAM(lparam) / scale;
+            double mouse_y = GET_Y_LPARAM(lparam) / scale;
+            if (g_surface)
+            {
+                // @Incomplete: @Robustness: should we be clamping mouse_x and mouse_y to the window size?
+                ghostty_surface_mouse_pos(g_surface, mouse_x, mouse_y, win32__get_keyboard_mods());
+            }
+        } break;
+
+        case WM_MOUSEWHEEL:
+        case WM_MOUSEHWHEEL:
+        {
+            double wheel_x = msg == WM_MOUSEHWHEEL ? (double)GET_WHEEL_DELTA_WPARAM(wparam) / (double)WHEEL_DELTA : 0;
+            double wheel_y = msg == WM_MOUSEWHEEL ? (double)GET_WHEEL_DELTA_WPARAM(wparam) / (double)WHEEL_DELTA : 0;
+            if (g_surface)
+            {
+                ghostty_surface_mouse_scroll(g_surface, wheel_x, wheel_y, win32__get_keyboard_mods());
+            }
+            return 0;
+        } break;
+
+        case WM_IME_REQUEST:
+        {
+            switch (wparam)
+            {
+                case IMR_QUERYCHARPOSITION:
+                {
+                    IMECHARPOSITION *char_pos = (IMECHARPOSITION *)lparam;
+                    char_pos->dwSize = sizeof(IMECHARPOSITION);
+                    char_pos->pt.x = 0;
+                    char_pos->pt.y = 0;
+                    char_pos->cLineHeight = 0;
+                    char_pos->rcDocument.left = 0;
+                    char_pos->rcDocument.top = 0;
+                    char_pos->rcDocument.right = 0;
+                    char_pos->rcDocument.bottom = 0;
+
+                    if (g_surface)
+                    {
+                        double x, y, width, height;
+                        ghostty_surface_ime_point(g_surface, &x, &y, &width, &height);
+
+                        double scale = win32__get_scale_factor(hwnd);
+                        POINT pt;
+                        pt.x = (LONG)(x * scale);
+                        pt.y = (LONG)(y * scale);
+                        LONG px_height = (LONG)(height * scale);
+
+                        //
+                        // A POINT structure containing the coordinate of the top left point of requested character in screen coordinates.
+                        // The top left point is based on the character baseline in any text flow.
+                        // From: https://learn.microsoft.com/en-us/windows/win32/api/imm/ns-imm-imecharposition
+                        //
+                        ClientToScreen(hwnd, &pt);
+
+                        char_pos->pt = pt;
+                        // Height of a line that contains the requested character, in pixels.
+                        char_pos->cLineHeight = px_height;
+
+                        // A RECT structure containing the editable area for text, in screen coordinates, for the application.
+                        RECT client_rect;
+                        GetClientRect(hwnd, &client_rect);
+                        POINT top_left = { client_rect.left, client_rect.top };
+                        POINT bottom_right = { client_rect.right, client_rect.bottom };
+                        ClientToScreen(hwnd, &top_left);
+                        ClientToScreen(hwnd, &bottom_right);
+                        char_pos->rcDocument.left = top_left.x;
+                        char_pos->rcDocument.top = top_left.y;
+                        char_pos->rcDocument.right = bottom_right.x;
+                        char_pos->rcDocument.bottom = bottom_right.y;
+                    }
+
+                    return true;
+                } break;
+            }
+        } break;
+
+        case WM_DROPFILES:
+        {
+        } break;
+    }
+
+    return DefWindowProcW(hwnd, msg, wparam, lparam);
+}
+
+int APIENTRY WinMain(HINSTANCE instance, HINSTANCE prev_inst, LPSTR cmd_line, int show)
+{
+    char **argv = __argv;
+    int argc = __argc;
+
+    if (ghostty_init((uintptr_t)argc, argv) != 0) {
+        fprintf(stderr, "ghostty_init failed\n");
+        return 1;
+    }
+
+    // NOTE(nick): Set DPI Awareness
+    {
+        HMODULE user32 = LoadLibraryA("user32.dll");
+
+        typedef BOOL Win32_SetProcessDpiAwarenessContext(HANDLE);
+        typedef BOOL Win32_SetProcessDpiAwareness(int);
+
+        Win32_SetProcessDpiAwarenessContext *SetProcessDpiAwarenessContext = (Win32_SetProcessDpiAwarenessContext *) GetProcAddress(user32, "SetProcessDpiAwarenessContext");
+        Win32_SetProcessDpiAwareness *SetProcessDpiAwareness = (Win32_SetProcessDpiAwareness *) GetProcAddress(user32, "SetProcessDpiAwareness");
+
+        if (SetProcessDpiAwarenessContext) {
+            SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+        } else if (SetProcessDpiAwareness) {
+            SetProcessDpiAwareness(PROCESS_SYSTEM_DPI_AWARE);
+        } else {
+            SetProcessDPIAware();
+        }
+    }
+
+    // NOTE(nick): Set Dark Mode Awareness
+    {
+        typedef DWORD WINAPI Win32_SetPreferredAppMode(DWORD);
+        HMODULE uxtheme = LoadLibraryExA("uxtheme.dll", NULL, LOAD_LIBRARY_SEARCH_SYSTEM32);
+        if (uxtheme)
+        {
+            // @Robustness: is this the expected way to call this?
+            Win32_SetPreferredAppMode *SetPreferredAppMode = (Win32_SetPreferredAppMode *)GetProcAddress(uxtheme, MAKEINTRESOURCEA(135));
+            if (SetPreferredAppMode)
+            {
+                SetPreferredAppMode(1);
+            }
+        }
+    }
+
+    // NOTE(nick): load function for dark theme
+    HMODULE dwmapi = LoadLibraryA("dwmapi.dll");
+    if (dwmapi)
+    {
+        DwmSetWindowAttribute = (Win32_DwmSetWindowAttribute *)GetProcAddress(dwmapi, "DwmSetWindowAttribute");
+    }
+
+    HINSTANCE hinstance = GetModuleHandleW(NULL);
+
+    HICON icon = LoadIconW(hinstance, MAKEINTRESOURCEW(ID_ICON_GHOSTTY));
+    if (!icon) {
+        fprintf(stderr, "LoadIconW failed err=%lu\n", GetLastError());
+    }
+
+    WNDCLASSEXW wc;
+    ZeroMemory(&wc, sizeof(wc));
+    wc.cbSize = sizeof(wc);
+    // CS_OWNDC: we need a stable per-window DC for the WGL context.
+    wc.style = CS_OWNDC;
+    wc.lpfnWndProc = WndProc;
+    wc.hInstance = hinstance;
+    wc.hIcon = icon;
+    wc.hCursor = LoadCursorW(NULL, IDC_ARROW);
+    wc.lpszClassName = L"GhosttyWindowClass";
+    wc.hIconSm = icon;
+    if (!RegisterClassExW(&wc)) {
+        fprintf(stderr, "RegisterClassExW failed\n");
+        win32__fatal_error("RegisterClassExW failed");
+        return 1;
+    }
+
+    HWND hwnd = CreateWindowExW(
+        0,
+        L"GhosttyWindowClass",
+        L"Ghostty",
+        WS_OVERLAPPEDWINDOW,
+        CW_USEDEFAULT, CW_USEDEFAULT,
+        1024, 768,
+        NULL, NULL, hinstance, NULL
+    );
+    if (!hwnd) {
+        fprintf(stderr, "CreateWindowExW failed\n");
+        win32__fatal_error("CreateWindowExW failed");
+        return 1;
+    }
+
+    // DragAcceptFiles(hwnd, TRUE);
+
+    ghostty_config_t config = ghostty_config_new();
+    ghostty_config_load_default_files(config);
+    ghostty_config_finalize(config);
+
+    ghostty_runtime_config_s runtime_config;
+    ZeroMemory(&runtime_config, sizeof(runtime_config));
+    runtime_config.userdata = hwnd;
+    runtime_config.wakeup_cb = win32__ghostty_wakeup;
+    runtime_config.action_cb = win32__ghostty_action;
+    runtime_config.read_clipboard_cb = win32__ghostty_read_clipboard;
+    runtime_config.confirm_read_clipboard_cb = win32__ghostty_confirm_read_clipboard;
+    runtime_config.write_clipboard_cb = win32__ghostty_write_clipboard;
+    runtime_config.close_surface_cb = win32__ghostty_close_surface;
+
+    g_app = ghostty_app_new(&runtime_config, config);
+    if (!g_app) {
+        fprintf(stderr, "ghostty_app_new failed\n");
+        return 1;
+    }
+
+    ghostty_surface_config_s surface_config = ghostty_surface_config_new();
+    surface_config.platform_tag = GHOSTTY_PLATFORM_WINDOWS;
+    surface_config.platform.windows.hwnd = hwnd;
+    surface_config.userdata = hwnd;
+    surface_config.scale_factor = win32__get_scale_factor(hwnd);
+
+    g_surface = ghostty_surface_new(g_app, &surface_config);
+    if (!g_surface) {
+        fprintf(stderr, "ghostty_surface_new failed\n");
+        return 1;
+    }
+
+    // The window's initial WM_SIZE fired during CreateWindowExW, before
+    // g_surface existed, so give the surface its real client size now.
+    RECT client_rect;
+    GetClientRect(hwnd, &client_rect);
+    ghostty_surface_set_size(
+        g_surface,
+        (uint32_t)(client_rect.right - client_rect.left),
+        (uint32_t)(client_rect.bottom - client_rect.top)
+    );
+
+    ShowWindow(hwnd, SW_SHOWDEFAULT);
+    UpdateWindow(hwnd);
+
+    MSG msg;
+    while (GetMessageW(&msg, NULL, 0, 0) > 0) {
+        TranslateMessage(&msg);
+        DispatchMessageW(&msg);
+    }
+
+    ghostty_config_free(config);
+    return 0;
+}

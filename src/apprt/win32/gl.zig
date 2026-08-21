@@ -249,6 +249,7 @@ pub fn init(hwnd: win32.HWND, major_version: c_int, minor_version: c_int) !GLCon
 
     if (swap_interval_p) |sp| {
         const swapInterval: SwapIntervalEXTFn = @ptrCast(sp);
+        // NOTE(nick): 1 is vsync on; 0 is vsync off
         _ = swapInterval(1);
     }
 
