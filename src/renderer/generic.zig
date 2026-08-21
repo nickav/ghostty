@@ -2536,12 +2536,6 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                         @intCast(cursor_vp.y),
                     };
 
-                    std.log.warn("[TIMING] cursor_pos updated x={d} y={d} t={d}ms", .{
-                        self.uniforms.cursor_pos[0],
-                        self.uniforms.cursor_pos[1],
-                        @divTrunc(std.Io.Timestamp.now(global.io(), .awake).nanoseconds, std.time.ns_per_ms),
-                    });
-
                     self.uniforms.bools.cursor_wide = switch (wide) {
                         .narrow, .spacer_head => false,
                         .wide, .spacer_tail => true,
